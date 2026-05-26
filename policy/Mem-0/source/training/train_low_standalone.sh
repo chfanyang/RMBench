@@ -5,7 +5,7 @@ set -euo pipefail
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate mem0
 
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export CUDA_VISIBLE_DEVICES=2,4,5,7
 
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}
 export MASTER_ADDR=127.0.0.1
@@ -25,6 +25,6 @@ torchrun \
   --master_addr=${MASTER_ADDR} \
   --master_port=${MASTER_PORT} \
   --nnodes=1 \
-  --nproc_per_node=8 \
+  --nproc_per_node=4 \
   source/training/train_low.py \
   "${ARGS[@]}"

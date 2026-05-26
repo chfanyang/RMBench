@@ -2,7 +2,7 @@
 
 policy_name=Mem-0
 
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=4
 echo -e "\033[33mGPU to use: 0\033[0m"
 
 cd ../..  # move to project root
@@ -12,10 +12,10 @@ cd ../..  # move to project root
 # M(1) evaluation format
 PYTHONWARNINGS=ignore::UserWarning \
 python script/eval_policy.py --config policy/${policy_name}/deploy_policy.yml --overrides \
-    --task_name swap_blocks \
-    --execution_ckpt ./policy/Mem-0/checkpoints/model.pt \
-    --state_stats_path ./policy/Mem-0/assets/model/norm_stats.json \
-    --global_task "There are three traies on the table, and two blocks are placed in two different traies. You may move only one block at a time, and each tray can hold at most one block. Swap the positions of the two blocks. Finally press the button." \
+    --task_name put_back_block \
+    --execution_ckpt ./policy/Mem-0/checkpoints/final_step30000.pt \
+    --state_stats_path ./policy/Mem-0/assets/put_back_block/norm_stats.json \
+    --global_task "There are four mats, one block, and a button on the table. One block is on one of the mats. First, put the block to the center, then press the button. Then, put the block back in its original position." \
     --vllm_url "http://localhost:8000" \
     --action_horizon 30 # Changeable
 

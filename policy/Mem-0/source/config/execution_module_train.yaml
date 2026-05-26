@@ -60,7 +60,7 @@ dataloader:
   # norm_stats_path: ./assets/Mn_mix/norm_stats.json
 
 trainer:
-  wandb_run_name: # TODO
+  wandb_run_name: put_back_block # TODO
   resume: null
   batch_size: 56
   train_steps: 30000
@@ -68,7 +68,7 @@ trainer:
   log_interval: 10
   classifier_metrics_window_size: 20
   enable_wandb: true
-  checkpoint_dir: # TODO
+  checkpoint_dir: /mnt/hwdata/cfy/RMBench/policy/Mem-0/checkpoints # TODO
   save_every_steps: 1000
   save_final: true
   scheduler: cosine
@@ -90,7 +90,7 @@ trainer:
 
 vla_dataset:
   RMBench:
-    repo_id: # TODO
+    repo_id: /mnt/hwdata/cfy/RMBench/policy/Mem-0/lerobot_datasets/put_back_block # TODO
     features_to_load:
       - observation.state
       - action

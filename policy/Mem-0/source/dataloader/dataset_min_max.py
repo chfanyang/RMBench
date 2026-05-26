@@ -586,8 +586,8 @@ def save_norm_stats(dataset: LeRobot_Dataset, task_name: str, lang: str) -> str:
 
 
 if __name__ == "__main__":
-    task_name = "your_task_name"
-    repo_id = "your_repo_id"
+    task_name = "put_back_block"
+    repo_id = "/mnt/hwdata/cfy/RMBench/policy/Mem-0/lerobot_datasets/put_back_block"
 
     dataset = LeRobot_Dataset(
         repo_id=repo_id,

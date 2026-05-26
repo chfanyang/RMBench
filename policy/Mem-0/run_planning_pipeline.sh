@@ -20,17 +20,17 @@ set -e
 # -----------------------------------------------------------------------------
 
 # LeRobot dataset path (required). Example: /path/to/Mem-0/lerobot_datasets/battery_try
-LEROBOT_DATASET_PATH="/home/wangyuran/RMBench/policy/Mem-0/lerobot_datasets/battery_try"
+LEROBOT_DATASET_PATH="/mnt/hwdata/cfy/RMBench/policy/Mem-0/lerobot_datasets/battery_try"
 
 # Episode range for data preparation (inclusive start, exclusive end)
 EPISODE_START_ID=0
 EPISODE_END_ID=50
 
 # LLaMA-Factory repository root (required). Example: /path/to/LlamaFactory
-LLAMAFACTORY_ROOT="/home/wangyuran/RMBench/policy/Mem-0/LlamaFactory"
+LLAMAFACTORY_ROOT="/mnt/hwdata/cfy/RMBench/policy/Mem-0/LlamaFactory"
 
 # Base directory for LoRA output and merged model (required). Script creates {dataset_name}_sft_lora under it.
-BASE_OUTPUT_DIR="/home/wangyuran/RMBench/policy/Mem-0/checkpoints"
+BASE_OUTPUT_DIR="/mnt/hwdata/cfy/RMBench/policy/Mem-0/checkpoints"
 
 # Merged model output directory (optional). If empty, uses BASE_OUTPUT_DIR/Qwen3-VL-8B-Instruct-{dataset_name}
 EXPORT_DIR=""
@@ -52,6 +52,7 @@ CONDA_ENV_LLAMAFACTORY="llama_factory"
 
 # Steps to run: prepare, copy, train, merge. Default: all. Example: STEPS="copy train merge"
 STEPS="${STEPS:-prepare copy train merge}"
+export CUDA_VISIBLE_DEVICES="0,1,3,6"
 
 # -----------------------------------------------------------------------------
 # Paths (do not edit unless you move the script)
