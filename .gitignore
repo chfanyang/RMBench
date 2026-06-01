@@ -29,3 +29,7 @@ envs/curobo/*
 
 /*.json*
 /*.txt
+
+_tmp_visual
+#policy/Mem-0/LlamaFactory
+datasets/

@@ -5,7 +5,7 @@ set -euo pipefail
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate mem0
 
-export CUDA_VISIBLE_DEVICES=2,4,5,7
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}
 export MASTER_ADDR=127.0.0.1
