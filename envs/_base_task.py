@@ -1009,7 +1009,10 @@ class Base_Task(gym.Env):
 
             self.take_dense_action(control_seq)
         if language_annotation is not None:
-            self.language_annotation.append([language_annotation, self.language_annotation_cache])
+            if self.language_annotation and self.language_annotation[-1][0] == language_annotation:
+                self.language_annotation[-1][1] += self.language_annotation_cache
+            else:
+                self.language_annotation.append([language_annotation, self.language_annotation_cache])
             self.language_annotation_cache = 0
         return True
 
