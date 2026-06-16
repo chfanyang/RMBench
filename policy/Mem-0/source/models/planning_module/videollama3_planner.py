@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -33,6 +34,7 @@ class VideoLLaMA3Planner:
 
         self.base_model = self._cfg_get(self.config, "base_model", "")
         self.lora_path = self._cfg_get(self.config, "lora_path", "")
+        self.repo_path = self._cfg_get(self.config, "repo_path", "")
         self.device = str(self._cfg_get(self.config, "device", device or ("cuda" if torch.cuda.is_available() else "cpu")))
         self.fps = int(self._cfg_get(self.config, "fps", 1))
         self.max_frames = int(self._cfg_get(self.config, "max_frames", 128))
@@ -75,6 +77,8 @@ class VideoLLaMA3Planner:
         if not self.base_model:
             raise ValueError("VideoLLaMA3Planner requires videollama3.base_model in config.")
 
+        self._ensure_repo_path()
+
         try:
             from transformers import AutoModelForCausalLM, AutoProcessor
         except Exception as exc:
@@ -115,12 +119,32 @@ class VideoLLaMA3Planner:
         self.model.eval()
         self.processor = AutoProcessor.from_pretrained(self.base_model, trust_remote_code=True)
 
+    def _ensure_repo_path(self) -> None:
+        if not self.repo_path:
+            return
+        repo_path = os.path.abspath(os.path.expanduser(str(self.repo_path)))
+        if not os.path.isdir(repo_path):
+            cprint(f"[VideoLLaMA3Planner] repo_path not found, using installed package if available: {repo_path}", "yellow")
+            return
+        if repo_path not in sys.path:
+            sys.path.insert(0, repo_path)
+            cprint(f"[VideoLLaMA3Planner] added repo_path to sys.path: {repo_path}", "cyan")
+
     def reset_stream(self, *args, **kwargs) -> None:
         """Clear accumulated streaming frames at episode start."""
         shutil.rmtree(self.frame_dir, ignore_errors=True)
         self.frame_dir.mkdir(parents=True, exist_ok=True)
         self._seen_frames = 0
         self._saved_frames = 0
+
+    def reset_episode(self) -> None:
+        """Clear episode-local planner state without unloading the model."""
+        self.reset_stream()
+        self.initial_observation = None
+        self.key_information = []
+        self.finished_subtasks = []
+        self._last_json = {}
+        self._last_subgoal = ""
 
     def append_frame_array(self, rgb: np.ndarray) -> None:
         """Append one RGB frame from the environment, honoring frame_stride."""
@@ -245,18 +269,32 @@ class VideoLLaMA3Planner:
         parsed = self._parse_json_object(text)
         if parsed is None:
             cprint(f"[VideoLLaMA3Planner] failed to parse JSON, raw output: {text}", "yellow")
-            return dict(self._last_json)
+            return {}
         self._last_json = parsed
         return parsed
 
     def _choose_subgoal(self, plan: Dict[str, Any], raw_text: str) -> str:
         subgoal = str(plan.get("next_subgoal") or plan.get("current_subgoal") or "").strip()
-        if not subgoal and raw_text:
-            subgoal = raw_text.strip()
+        if not subgoal:
+            subgoal = self._extract_subgoal_field(raw_text)
         if not subgoal:
             subgoal = self._last_subgoal or self.global_task or "continue the task"
         self._last_subgoal = subgoal
         return subgoal.rstrip(".")
+
+    @staticmethod
+    def _extract_subgoal_field(text: str) -> str:
+        if not text:
+            return ""
+        for field in ("next_subgoal", "current_subgoal"):
+            match = re.search(
+                rf'["\']?{field}["\']?\s*:\s*["\']([^"\']+)["\']',
+                text,
+                flags=re.IGNORECASE,
+            )
+            if match:
+                return match.group(1).strip()
+        return ""
 
     @staticmethod
     def _parse_json_object(text: str) -> Optional[Dict[str, Any]]:

@@ -19,6 +19,7 @@ planner_type: memorymatters # options: memorymatters, videollama3
 
 # VideoLLaMA3 high-level planner example. Set planner_type: videollama3 to enable.
 videollama3:
+  repo_path: /mnt/hwdata/cfy/VideoLLaMA3
   base_model: /mnt/hwdata/cfy/VideoLLaMA3/weights/videollama3_7b_local
   lora_path: /mnt/hwdata/cfy/VideoLLaMA3/work_dirs/rmbench_cover_blocks_stream_frames_demo_clean/checkpoint-xxxx
   device: cuda:1

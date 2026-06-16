@@ -67,6 +67,17 @@ def main():
         assert parsed["next_subgoal"] == "cover middle block"
         assert planner._choose_subgoal(parsed, raw) == "cover middle block"
 
+        invalid_json = 'assistant says next_subgoal: "uncover red block" after checking the scene'
+        assert planner.parse_planning_json(invalid_json) == {}
+        assert planner._choose_subgoal({}, invalid_json) == "uncover red block"
+
+        planner.reset_episode()
+        assert planner.initial_observation is None
+        assert planner.key_information == []
+        assert planner.finished_subtasks == []
+        assert planner._last_json == {}
+        assert planner._last_subgoal == ""
+
         if args.base_model:
             result = planner.generate_anwser()
             assert result.startswith("next_subtask: ")
@@ -77,4 +88,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

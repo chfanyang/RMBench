@@ -235,9 +235,13 @@ class MemoryMattersAgent:
         self.action_count = 0
         self._time_action_history = {}
         
-        self.high_model = self._build_high_model()
-        if hasattr(self.high_model, "reset_stream"):
-            self.high_model.reset_stream()
+        if isinstance(self.high_model, VideoLLaMA3Planner):
+            if hasattr(self.high_model, "reset_episode"):
+                self.high_model.reset_episode()
+            elif hasattr(self.high_model, "reset_stream"):
+                self.high_model.reset_stream()
+        else:
+            self.high_model = self._build_high_model()
         
         # reset tmp video folder
         shutil.rmtree ("./_tmp_visual/", ignore_errors = True)
