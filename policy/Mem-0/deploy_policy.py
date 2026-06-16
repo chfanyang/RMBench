@@ -230,6 +230,18 @@ def encode_obs(observation: dict) -> Dict[str, object]:
     return {"image": pil_image, "state": norm_stats.reshape(1, -1), "instruction": observation.get("instruction", "")}
 
 
+def _append_planner_frame_from_obs(model: MemoryMattersAgent, observation: dict) -> None:
+    """Append one real RGB observation to streaming planners without changing executor inputs."""
+    if not hasattr(model, "append_planner_frame"):
+        return
+    cam_key: str = _RUNTIME_SETTINGS.get("camera_key", "head_camera")
+    obs_block = observation.get("observation", {})
+    camera = obs_block.get(cam_key, {})
+    rgb = camera.get("rgb")
+    if rgb is not None:
+        model.append_planner_frame(rgb)
+
+
 def get_model(usr_args: dict) -> MemoryMattersAgent:
     """
     Build MemoryMatters agent from deploy_policy.yml + overrides.
@@ -260,6 +272,7 @@ def eval(TASK_ENV, model: MemoryMattersAgent, observation: dict):
         model.is_init = 1
         image = TASK_ENV.now_obs["observation"]["head_camera"]["rgb"]
         Image.fromarray (image).save ("./_tmp_visual/init.png")
+        _append_planner_frame_from_obs(model, TASK_ENV.now_obs)
         
         # --- For Mn Tasks: use planner to get the first subtask instruction
         if model.task_type == "Mn":
@@ -297,6 +310,7 @@ def eval(TASK_ENV, model: MemoryMattersAgent, observation: dict):
         TASK_ENV.take_action(action, action_type="qpos")
         
         observation = TASK_ENV.get_obs()
+        _append_planner_frame_from_obs(model, observation)
         observation["instruction"] = instruction
         encoded_obs = encode_obs(observation)
         

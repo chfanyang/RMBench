@@ -14,6 +14,7 @@ from omegaconf import OmegaConf
 
 from source.models.execution_module.memorymatters_executor import MemoryMattersExecutor
 from source.models.planning_module.memorymatters_planner import MemoryMattersPlanner
+from source.models.planning_module.videollama3_planner import VideoLLaMA3Planner
 from source.training.utils.trainer_tools import resize_images
 import source.utils.pil_tools as pil_tools
 
@@ -53,11 +54,7 @@ class MemoryMattersAgent:
         self.end_signal_count = 0
         self.action_count = 0
        
-        self.high_model = MemoryMattersPlanner (
-            config = OmegaConf.load (self.config.get ("planning_module_config_path", "")),
-            global_task = self.config.get ("global_task", ""),
-            vllm_url = self.config.get ("vllm_url", ""),
-        )
+        self.high_model = self._build_high_model()
         cprint (f"global_task = {self.config.get ('global_task', '')}", "red")  
         
         # reset tmp video folder
@@ -65,6 +62,27 @@ class MemoryMattersAgent:
         os.makedirs ("./_tmp_visual/", exist_ok = True)
         
         self.instruction = ""
+
+    def _build_high_model(self):
+        planner_type = str(self.config.get("planner_type", "memorymatters")).lower()
+        if planner_type == "videollama3":
+            cprint("[deploy] high-level planner: VideoLLaMA3Planner", "cyan")
+            return VideoLLaMA3Planner(
+                config=self.config,
+                global_task=self.config.get("global_task", ""),
+                device=self.device,
+            )
+
+        cprint("[deploy] high-level planner: MemoryMattersPlanner", "cyan")
+        return MemoryMattersPlanner (
+            config = OmegaConf.load (self.config.get ("planning_module_config_path", "")),
+            global_task = self.config.get ("global_task", ""),
+            vllm_url = self.config.get ("vllm_url", ""),
+        )
+
+    def append_planner_frame(self, rgb):
+        if self.task_type == "Mn" and hasattr(self.high_model, "append_frame_array"):
+            self.high_model.append_frame_array(rgb)
 
     def accumulate_actions_chunk(self, actions_model: np.ndarray) -> None:
         """
@@ -217,11 +235,9 @@ class MemoryMattersAgent:
         self.action_count = 0
         self._time_action_history = {}
         
-        self.high_model = MemoryMattersPlanner (
-            config = OmegaConf.load (self.config.get ("planning_module_config_path", "")),
-            global_task = self.config.get ("global_task", ""),
-            vllm_url = self.config.get ("vllm_url", ""),
-        )
+        self.high_model = self._build_high_model()
+        if hasattr(self.high_model, "reset_stream"):
+            self.high_model.reset_stream()
         
         # reset tmp video folder
         shutil.rmtree ("./_tmp_visual/", ignore_errors = True)

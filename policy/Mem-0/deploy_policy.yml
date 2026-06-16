@@ -15,6 +15,19 @@ state_stats_path: ./policy/Mem-0/assets/x/norm_stats.json # TODO
 
 planning_module_config_path: ./policy/Mem-0/source/config/planning_module_inference.yaml
 vllm_url: http://localhost:8000 # TODO
+planner_type: memorymatters # options: memorymatters, videollama3
+
+# VideoLLaMA3 high-level planner example. Set planner_type: videollama3 to enable.
+videollama3:
+  base_model: /mnt/hwdata/cfy/VideoLLaMA3/weights/videollama3_7b_local
+  lora_path: /mnt/hwdata/cfy/VideoLLaMA3/work_dirs/rmbench_cover_blocks_stream_frames_demo_clean/checkpoint-xxxx
+  device: cuda:1
+  fps: 1
+  max_frames: 128
+  max_new_tokens: 128
+  attn_implementation: flash_attention_2
+  frame_stride: 1
+  frame_dir: ./_tmp_visual/vl3_stream_frames
 
 action_horizon: 30
 threshold: 2 # when subtask end signal count reaches this value, we consider the subtask ended and move to the next one
