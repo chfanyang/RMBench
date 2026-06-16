@@ -20,11 +20,11 @@ set -e
 # -----------------------------------------------------------------------------
 
 # LeRobot dataset path (required). Example: /path/to/Mem-0/lerobot_datasets/battery_try
-LEROBOT_DATASET_PATH="/mnt/hwdata/cfy/RMBench/policy/Mem-0/lerobot_datasets/battery_try"
+LEROBOT_DATASET_PATH="/mnt/hwdata/cfy/RMBench/policy/Mem-0/lerobot_datasets/cover_blocks"
 
 # Episode range for data preparation (inclusive start, exclusive end)
 EPISODE_START_ID=0
-EPISODE_END_ID=50
+EPISODE_END_ID=100
 
 # LLaMA-Factory repository root (required). Example: /path/to/LlamaFactory
 LLAMAFACTORY_ROOT="/mnt/hwdata/cfy/RMBench/policy/Mem-0/LlamaFactory"
@@ -36,9 +36,9 @@ BASE_OUTPUT_DIR="/mnt/hwdata/cfy/RMBench/policy/Mem-0/checkpoints"
 EXPORT_DIR=""
 
 # Training options (optional; change if needed)
-MAX_SAMPLES=1000
+MAX_SAMPLES=5000 #1000
 NUM_TRAIN_EPOCHS=25
-PER_DEVICE_TRAIN_BATCH_SIZE=16
+PER_DEVICE_TRAIN_BATCH_SIZE=2 #16
 LEARNING_RATE="1.0e-4"
 REPORT_TO="wandb"
 
@@ -52,7 +52,7 @@ CONDA_ENV_LLAMAFACTORY="llama_factory"
 
 # Steps to run: prepare, copy, train, merge. Default: all. Example: STEPS="copy train merge"
 STEPS="${STEPS:-prepare copy train merge}"
-export CUDA_VISIBLE_DEVICES="0,1,3,6"
+export CUDA_VISIBLE_DEVICES="0,1,2,3"
 
 # -----------------------------------------------------------------------------
 # Paths (do not edit unless you move the script)
@@ -60,8 +60,9 @@ export CUDA_VISIBLE_DEVICES="0,1,3,6"
 MEM0_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$MEM0_DIR"
 SCRIPTS_DIR="${MEM0_DIR}/scripts"
-DATA_PREP_SCRIPT="${SCRIPTS_DIR}/llama_data_preparation/llamafactory_data_preparation.py"
+DATA_PREP_SCRIPT="${SCRIPTS_DIR}/llama_data_preparation/llamafactory_data_preparation_uniform.py"
 PIPELINE_SCRIPT="${SCRIPTS_DIR}/planning_train_pipeline.py"
+SUBNAME="_uniform"
 
 # -----------------------------------------------------------------------------
 # Progress bar helpers
@@ -121,6 +122,7 @@ fi
 
 # Dataset name (from LeRobot path) for skip detection
 DATASET_NAME=$(basename "${LEROBOT_DATASET_PATH%/}")
+DATASET_NAME="${DATASET_NAME}${SUBNAME}"
 
 TOTAL_STEPS=$(count_steps)
 CURRENT_STEP=0
@@ -169,7 +171,8 @@ if [[ -n "$RUN_STEPS" ]]; then
   CURRENT_STEP=$((CURRENT_STEP + 1))
   print_step_progress "$CURRENT_STEP" "$TOTAL_STEPS" "Copy to LLaMA-Factory, Train, Merge ($RUN_STEPS)"
   ARGS=(
-    --lerobot_dataset_path "$LEROBOT_DATASET_PATH"
+    #--lerobot_dataset_path "$LEROBOT_DATASET_PATH"
+    --lerobot_dataset_path "$DATASET_NAME"
     --llamafactory_root "$LLAMAFACTORY_ROOT"
     --base_output_dir "$BASE_OUTPUT_DIR"
     --episode_start_id "$EPISODE_START_ID"

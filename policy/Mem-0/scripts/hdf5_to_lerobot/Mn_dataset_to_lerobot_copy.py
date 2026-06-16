@@ -21,7 +21,7 @@ except ImportError:
         return iterable
 
 TASK_NAMES = [
-    "battery_try",
+    #"battery_try",
     #"blocks_ranking_try",
     "cover_blocks",
     #"press_button",
@@ -87,7 +87,7 @@ total_frames = 0
 task_pbar = tqdm(TASK_NAMES, desc="Overall progress", leave=True)
 for dataset_name in task_pbar:
     # Create Lerobot dataset
-    lerobot_dataset_name = f"{dataset_name}"
+    lerobot_dataset_name = f"{dataset_name}"+"_eval"
     dataset = LeRobotDataset.create(
         repo_id=lerobot_dataset_name,
         fps=30,
@@ -103,7 +103,7 @@ for dataset_name in task_pbar:
     global_task_text = TASK_INSTRUCTIONS.get(dataset_name, "")
     
     # Read language annotation file for current task
-    annotation_path = Path(f"{RMBench_workspace}/data/{dataset_name}/demo_clean/language_annotation.json")
+    annotation_path = Path(f"{RMBench_workspace}/data/{dataset_name}/eval_100/language_annotation.json")
     language_annotations = {}
     
     if annotation_path.exists():
@@ -116,6 +116,7 @@ for dataset_name in task_pbar:
         print(f"  ⚠️  Annotation file for {dataset_name} does not exist: {annotation_path}")
     
     # Process each episode
+    #episode_iter = tqdm(range(episode_num,episode_num+50), desc=f"  {dataset_name}", leave=False, unit="episode")
     episode_iter = tqdm(range(episode_num), desc=f"  {dataset_name}", leave=False, unit="episode")
     for episode_idx in episode_iter:
         episode_key = f"episode_{episode_idx}"

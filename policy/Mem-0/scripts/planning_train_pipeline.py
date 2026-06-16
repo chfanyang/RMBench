@@ -163,7 +163,7 @@ def step_train(cfg: dict, dataset_name: str) -> str:
 
     train_config = {
         "model_name_or_path": str(base_model_path),
-        "image_max_pixels": 262144,
+        "image_max_pixels": 131072,#262144,
         "video_max_pixels": 16384,
         "trust_remote_code": True,
         "stage": "sft",
@@ -173,7 +173,7 @@ def step_train(cfg: dict, dataset_name: str) -> str:
         "lora_target": "all",
         "dataset": dataset_name,
         "template": TEMPLATE,
-        "cutoff_len": 2048,
+        "cutoff_len": 8192,#2048
         "max_samples": cfg.get("max_samples", 1000),
         "overwrite_cache": True,
         "preprocessing_num_workers": 16,
