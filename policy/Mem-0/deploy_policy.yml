@@ -31,10 +31,12 @@ videollama3_server:
 
 # Local debug baseline. Set planner_type: videollama3_local to enable.
 # This loads VideoLLaMA3 inside the RMBench process and requires peft/transformers
-# in the Mem-0 environment.
+# in the Mem-0 environment. Use the HF repo/cache name because the local
+# videollama3_7b_local directory does not include processor files such as
+# preprocessor_config.json.
 videollama3:
   repo_path: /mnt/hwdata/cfy/VideoLLaMA3
-  base_model: /mnt/hwdata/cfy/VideoLLaMA3/weights/videollama3_7b_local
+  base_model: DAMO-NLP-SG/VideoLLaMA3-7B
   lora_path: /mnt/hwdata/cfy/VideoLLaMA3/work_dirs/rmbench_cover_blocks_stream_frames_demo_clean/checkpoint-3000
   device: cuda:1
   fps: 1

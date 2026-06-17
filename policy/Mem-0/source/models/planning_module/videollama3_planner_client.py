@@ -22,6 +22,19 @@ except Exception:
 requests = None
 
 
+def build_training_prompt(global_task: str) -> str:
+    return (
+        f"Global task: {global_task}\n"
+        "Based only on the video so far, output the robot planning state as compact JSON.\n"
+        "Use exactly these keys: current_subgoal, current_status, next_subgoal, should_switch, task_status.\n"
+        'current_status must be either "in_progress" or "completed".\n'
+        'task_status must be either "running" or "completed".\n'
+        "If the current subgoal is still in progress, next_subgoal should be the current subgoal and should_switch should be false.\n"
+        "If the current subgoal has just been completed, next_subgoal should be the next subgoal and should_switch should be true.\n"
+        'If the whole task has been completed, next_subgoal should be null, should_switch should be false, and task_status should be "completed".'
+    )
+
+
 class VideoLLaMA3PlannerClient:
     """Mem-0 compatible high-level planner backed by HTTP."""
 
@@ -148,6 +161,7 @@ class VideoLLaMA3PlannerClient:
         return {
             "frame_dir": str(self.frame_dir),
             "global_task": self.global_task,
+            "prompt": build_training_prompt(self.global_task),
             "initial_observation": str(self.initial_observation or ""),
             "finished_subtasks": list(self.finished_subtasks),
             "previous_subgoal": previous_subgoal or "",
@@ -187,6 +201,16 @@ class VideoLLaMA3PlannerClient:
             cprint("[VideoLLaMA3PlannerClient] server returned empty instruction; using fallback", "yellow")
 
         self.last_instruction = instruction
+        if not bool(data.get("ok", False)):
+            raw_preview = self.last_raw_output[:240].replace("\n", "\\n")
+            cprint(
+                "[VideoLLaMA3PlannerClient] planner server returned ok=false; "
+                f"error={data.get('error')}; "
+                f"used_fallback={self.last_used_fallback}; "
+                f"raw_output_prefix={raw_preview!r}; "
+                f"instruction={instruction}",
+                "yellow",
+            )
         subgoal = str(data.get("subgoal") or "").strip()
         if subgoal:
             self._last_subgoal = subgoal.rstrip(".")

@@ -12,6 +12,10 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# Keep the existing HuggingFace cache for model files, but place dynamic
+# remote-code modules in /tmp so restricted worktrees do not block startup.
+os.environ.setdefault("HF_MODULES_CACHE", "/tmp/videollama3_hf_modules")
+
 try:
     import torch
 except Exception:
@@ -55,23 +59,25 @@ def extract_subgoal_field(text: str) -> str:
     return ""
 
 
-def build_prompt(payload: Dict[str, Any]) -> str:
-    finished = payload.get("finished_subtasks") or []
-    previous = payload.get("previous_subgoal") or (finished[-1] if finished else "")
-    initial_observation = payload.get("initial_observation") or ""
-    finished_text = "; ".join(str(item) for item in finished) if finished else "none"
+def build_training_prompt(global_task: str) -> str:
     return (
-        "You are the high-level planner for a robot manipulation task. "
-        "Given all video frames accumulated so far in the current episode, "
-        "return only compact JSON with exactly these fields: "
-        '{"current_subgoal":"...","current_status":"in_progress or completed",'
-        '"next_subgoal":"...","should_switch":true,"task_status":"running or completed"}. '
-        f"Global task: {payload.get('global_task', '')}. "
-        f"Initial observation reference: {initial_observation or 'none'}. "
-        f"Finished subtasks: {finished_text}. "
-        f"Previous subgoal: {previous or 'none'}. "
-        "Choose next_subgoal as the instruction the existing low-level executor should follow next."
+        f"Global task: {global_task}\n"
+        "Based only on the video so far, output the robot planning state as compact JSON.\n"
+        "Use exactly these keys: current_subgoal, current_status, next_subgoal, should_switch, task_status.\n"
+        'current_status must be either "in_progress" or "completed".\n'
+        'task_status must be either "running" or "completed".\n'
+        "If the current subgoal is still in progress, next_subgoal should be the current subgoal and should_switch should be false.\n"
+        "If the current subgoal has just been completed, next_subgoal should be the next subgoal and should_switch should be true.\n"
+        'If the whole task has been completed, next_subgoal should be null, should_switch should be false, and task_status should be "completed".'
     )
+
+
+def build_prompt(payload: Dict[str, Any]) -> str:
+    for key in ("prompt", "question"):
+        if payload.get(key):
+            return str(payload[key])
+
+    return build_training_prompt(str(payload.get("global_task", "")))
 
 
 def validate_frame_dir(frame_dir: str) -> Optional[str]:
@@ -109,6 +115,28 @@ def make_response(
         "instruction": f"next_subtask: {clean_subgoal}.",
         "error": error,
     }
+
+
+def request_fallback_subgoal(payload: Dict[str, Any]) -> str:
+    previous = str(payload.get("previous_subgoal") or "").strip()
+    if previous:
+        return previous
+    finished = payload.get("finished_subtasks") or []
+    if finished:
+        return str(finished[-1]).strip() or "continue the task"
+    return "continue the task"
+
+
+def processor_fallback_from_config(base_model: str) -> str:
+    config_path = Path(base_model) / "config.json"
+    if not config_path.is_file():
+        return ""
+    try:
+        with config_path.open("r", encoding="utf-8") as f:
+            config = json.load(f)
+    except Exception:
+        return ""
+    return str(config.get("_name_or_path") or "")
 
 
 class VideoLLaMA3PlannerService:
@@ -172,7 +200,18 @@ class VideoLLaMA3PlannerService:
                 cprint(f"[VideoLLaMA3 server] merge_and_unload failed; continuing with PeftModel: {exc}")
 
         self.model.eval()
-        self.processor = AutoProcessor.from_pretrained(self.args.base_model, trust_remote_code=True)
+        processor_path = self.args.base_model
+        try:
+            self.processor = AutoProcessor.from_pretrained(processor_path, trust_remote_code=True)
+        except OSError as exc:
+            fallback = processor_fallback_from_config(self.args.base_model)
+            if not fallback or fallback == processor_path:
+                raise
+            cprint(
+                f"[VideoLLaMA3 server] processor load failed from {processor_path}; "
+                f"falling back to {fallback}: {exc}"
+            )
+            self.processor = AutoProcessor.from_pretrained(fallback, trust_remote_code=True)
         self.model_loaded = True
 
     def health(self) -> Dict[str, Any]:
@@ -208,8 +247,8 @@ class VideoLLaMA3PlannerService:
             subgoal = str(parsed.get("next_subgoal") or parsed.get("current_subgoal") or regex_subgoal or "").strip()
             used_fallback = False
             if not subgoal:
+                fallback = request_fallback_subgoal(payload)
                 if bool(payload.get("strict", False)):
-                    fallback = self.last_subgoal or "continue the task"
                     return make_response(
                         False,
                         raw_output=raw_output,
@@ -219,7 +258,7 @@ class VideoLLaMA3PlannerService:
                         used_fallback=True,
                         error="planner-output-invalid",
                     )
-                subgoal = self.last_subgoal or "continue the task"
+                subgoal = fallback
                 used_fallback = True
             self.last_subgoal = subgoal.rstrip(".")
             return make_response(
@@ -238,13 +277,33 @@ class VideoLLaMA3PlannerService:
         max_frames = int(payload.get("max_frames") or self.args.max_frames)
         max_new_tokens = int(payload.get("max_new_tokens") or self.args.max_new_tokens)
         prompt = build_prompt(payload)
+        start_time = payload.get("start_time")
+        end_time = payload.get("end_time")
+        frame_indices = payload.get("frame_indices")
+
+        from videollama3.mm_utils import load_video
+
+        frames, timestamps = load_video(
+            video_path=str(frame_dir),
+            start_time=start_time,
+            end_time=end_time,
+            fps=fps,
+            max_frames=max_frames,
+            frame_indices=frame_indices,
+        )
+        video_content = {
+            "type": "video",
+            "video": frames,
+            "num_frames": len(frames),
+            "timestamps": timestamps,
+        }
 
         conversation = [
             {"role": "system", "content": "You are a helpful robot planning assistant."},
             {
                 "role": "user",
                 "content": [
-                    {"type": "video", "video": {"video_path": frame_dir, "fps": fps, "max_frames": max_frames}},
+                    video_content,
                     {"type": "text", "text": prompt},
                 ],
             },
