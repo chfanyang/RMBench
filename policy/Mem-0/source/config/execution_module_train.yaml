@@ -60,7 +60,7 @@ dataloader:
   # norm_stats_path: ./assets/Mn_mix/norm_stats.json
 
 trainer:
-  wandb_run_name: battery_try # TODO
+  wandb_run_name: cover_blocks # TODO
   resume: null
   batch_size: 56
   train_steps: 30000
@@ -68,7 +68,7 @@ trainer:
   log_interval: 10
   classifier_metrics_window_size: 20
   enable_wandb: true
-  checkpoint_dir: /mnt/hwdata/cfy/RMBench/policy/Mem-0/checkpoints/battery_try # TODO
+  checkpoint_dir: /mnt/hwdata/cfy/RMBench/policy/Mem-0/checkpoints/cover_blocks # TODO
   save_every_steps: 1000
   save_final: true
   scheduler: cosine
@@ -90,7 +90,7 @@ trainer:
 
 vla_dataset:
   RMBench:
-    repo_id: /mnt/hwdata/cfy/RMBench/policy/Mem-0/lerobot_datasets/battery_try # TODO
+    repo_id: /mnt/hwdata/cfy/RMBench/policy/Mem-0/lerobot_datasets/cover_blocks # TODO
     features_to_load:
       - observation.state
       - action

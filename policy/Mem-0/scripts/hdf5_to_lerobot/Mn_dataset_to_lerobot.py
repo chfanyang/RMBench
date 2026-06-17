@@ -21,7 +21,7 @@ except ImportError:
         return iterable
 
 TASK_NAMES = [
-    "battery_try",
+    #"battery_try",
     #"blocks_ranking_try",
     "cover_blocks",
     #"press_button",
@@ -29,7 +29,7 @@ TASK_NAMES = [
 ]
 
 # Define number of episodes to process
-episode_num = 100
+episode_num = 50
 
 TASK_INSTRUCTIONS = {
     "battery_try": "There are two batteries and a battery slot on the table. Combining the two batteries in different orientations causes the dashboard needle to rotate.",

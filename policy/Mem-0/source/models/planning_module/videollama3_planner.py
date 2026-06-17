@@ -16,7 +16,12 @@ from typing import Any, Dict, Optional
 import numpy as np
 import torch
 from PIL import Image
-from termcolor import cprint
+
+try:
+    from termcolor import cprint
+except Exception:
+    def cprint(text, *args, **kwargs):
+        print(text)
 
 
 class VideoLLaMA3Planner:
@@ -35,6 +40,7 @@ class VideoLLaMA3Planner:
         self.base_model = self._cfg_get(self.config, "base_model", "")
         self.lora_path = self._cfg_get(self.config, "lora_path", "")
         self.repo_path = self._cfg_get(self.config, "repo_path", "")
+        self.processor_path = self._cfg_get(self.config, "processor_path", "")
         self.device = str(self._cfg_get(self.config, "device", device or ("cuda" if torch.cuda.is_available() else "cpu")))
         self.fps = int(self._cfg_get(self.config, "fps", 1))
         self.max_frames = int(self._cfg_get(self.config, "max_frames", 128))
@@ -53,6 +59,8 @@ class VideoLLaMA3Planner:
         self._saved_frames = 0
         self._last_json: Dict[str, Any] = {}
         self._last_subgoal = ""
+        self._last_raw_output = ""
+        self._last_instruction = ""
 
         self.reset_stream()
         if self.load_model_on_init:
@@ -117,7 +125,33 @@ class VideoLLaMA3Planner:
                 cprint(f"[VideoLLaMA3Planner] merge_and_unload failed; using PeftModel: {exc}", "yellow")
 
         self.model.eval()
-        self.processor = AutoProcessor.from_pretrained(self.base_model, trust_remote_code=True)
+        self.processor = self._load_processor(AutoProcessor)
+
+    def _load_processor(self, processor_cls):
+        processor_path = self.processor_path or self.base_model
+        try:
+            return processor_cls.from_pretrained(processor_path, trust_remote_code=True)
+        except OSError as exc:
+            fallback = self._processor_fallback_from_config()
+            if not fallback or fallback == processor_path:
+                raise
+            cprint(
+                f"[VideoLLaMA3Planner] processor load failed from {processor_path}; "
+                f"falling back to {fallback}: {exc}",
+                "yellow",
+            )
+            return processor_cls.from_pretrained(fallback, trust_remote_code=True)
+
+    def _processor_fallback_from_config(self) -> str:
+        config_path = os.path.join(str(self.base_model), "config.json")
+        if not os.path.isfile(config_path):
+            return ""
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        except Exception:
+            return ""
+        return str(config.get("_name_or_path") or "")
 
     def _ensure_repo_path(self) -> None:
         if not self.repo_path:
@@ -145,6 +179,8 @@ class VideoLLaMA3Planner:
         self.finished_subtasks = []
         self._last_json = {}
         self._last_subgoal = ""
+        self._last_raw_output = ""
+        self._last_instruction = ""
 
     def append_frame_array(self, rgb: np.ndarray) -> None:
         """Append one RGB frame from the environment, honoring frame_stride."""
@@ -248,9 +284,11 @@ class VideoLLaMA3Planner:
         if not text:
             text = self.processor.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
 
+        self._last_raw_output = text
         plan = self.parse_planning_json(text)
         subgoal = self._choose_subgoal(plan, text)
-        return f"next_subtask: {subgoal}."
+        self._last_instruction = f"next_subtask: {subgoal}."
+        return self._last_instruction
 
     def _append_initial_observation_as_frame(self) -> None:
         obs = self.initial_observation

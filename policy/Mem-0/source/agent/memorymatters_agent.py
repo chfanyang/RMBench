@@ -15,6 +15,7 @@ from omegaconf import OmegaConf
 from source.models.execution_module.memorymatters_executor import MemoryMattersExecutor
 from source.models.planning_module.memorymatters_planner import MemoryMattersPlanner
 from source.models.planning_module.videollama3_planner import VideoLLaMA3Planner
+from source.models.planning_module.videollama3_planner_client import VideoLLaMA3PlannerClient
 from source.training.utils.trainer_tools import resize_images
 import source.utils.pil_tools as pil_tools
 
@@ -66,12 +67,26 @@ class MemoryMattersAgent:
     def _build_high_model(self):
         planner_type = str(self.config.get("planner_type", "memorymatters")).lower()
         if planner_type == "videollama3":
-            cprint("[deploy] high-level planner: VideoLLaMA3Planner", "cyan")
+            cprint("[deploy] planner_type=videollama3 is deprecated; using videollama3_local", "yellow")
+            planner_type = "videollama3_local"
+
+        if planner_type == "videollama3_local":
+            cprint("[deploy] high-level planner: VideoLLaMA3Planner (local debug; loads model in RMBench process)", "cyan")
             return VideoLLaMA3Planner(
                 config=self.config,
                 global_task=self.config.get("global_task", ""),
                 device=self.device,
             )
+
+        if planner_type == "videollama3_server":
+            cprint("[deploy] high-level planner: VideoLLaMA3PlannerClient (HTTP server)", "cyan")
+            return VideoLLaMA3PlannerClient(
+                config=self.config,
+                global_task=self.config.get("global_task", ""),
+            )
+
+        if planner_type != "memorymatters":
+            cprint(f"[deploy] unknown planner_type={planner_type}; falling back to memorymatters", "yellow")
 
         cprint("[deploy] high-level planner: MemoryMattersPlanner", "cyan")
         return MemoryMattersPlanner (
@@ -235,11 +250,10 @@ class MemoryMattersAgent:
         self.action_count = 0
         self._time_action_history = {}
         
-        if isinstance(self.high_model, VideoLLaMA3Planner):
-            if hasattr(self.high_model, "reset_episode"):
-                self.high_model.reset_episode()
-            elif hasattr(self.high_model, "reset_stream"):
-                self.high_model.reset_stream()
+        if hasattr(self.high_model, "reset_episode"):
+            self.high_model.reset_episode()
+        elif hasattr(self.high_model, "reset_stream"):
+            self.high_model.reset_stream()
         else:
             self.high_model = self._build_high_model()
         

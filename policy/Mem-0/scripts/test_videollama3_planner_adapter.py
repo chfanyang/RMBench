@@ -79,8 +79,17 @@ def main():
         assert planner._last_subgoal == ""
 
         if args.base_model:
+            for i in range(4):
+                rgb = np.zeros((64, 64, 3), dtype=np.uint8)
+                rgb[..., 0] = i * 40
+                rgb[..., 1] = 128
+                rgb[..., 2] = 255 - i * 30
+                planner.append_frame_array(rgb)
             result = planner.generate_anwser()
             assert result.startswith("next_subtask: ")
+            print("raw_output =", planner._last_raw_output)
+            print("parsed_subgoal =", planner._last_subgoal)
+            print("instruction =", result)
             print(result)
         else:
             print("VideoLLaMA3Planner smoke test passed without loading model weights.")
