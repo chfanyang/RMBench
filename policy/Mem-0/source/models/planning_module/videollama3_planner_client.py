@@ -48,6 +48,7 @@ class VideoLLaMA3PlannerClient:
         self.max_frames = int(self._cfg_get(self.config, "max_frames", self._cfg_get(self._select_local_config(config), "max_frames", 128)))
         self.max_new_tokens = int(self._cfg_get(self.config, "max_new_tokens", self._cfg_get(self._select_local_config(config), "max_new_tokens", 128)))
         self.frame_stride = max(1, int(self._cfg_get(self.config, "frame_stride", self._cfg_get(self._select_local_config(config), "frame_stride", 1))))
+        self.planner_frame_interval = max(1, int(self._cfg_get(self.config, "planner_frame_interval", 30)))
         frame_dir = self._cfg_get(
             self.config,
             "frame_dir",
@@ -158,6 +159,7 @@ class VideoLLaMA3PlannerClient:
 
     def _build_request_payload(self) -> Dict[str, Any]:
         previous_subgoal = self.finished_subtasks[-1] if self.finished_subtasks else self._last_subgoal
+        frame_indices = self._build_planner_frame_indices()
         return {
             "frame_dir": str(self.frame_dir),
             "global_task": self.global_task,
@@ -169,8 +171,20 @@ class VideoLLaMA3PlannerClient:
             "fps": self.fps,
             "max_frames": self.max_frames,
             "max_new_tokens": self.max_new_tokens,
+            "frame_indices": frame_indices,
             "strict": self.strict,
         }
+
+    def _build_planner_frame_indices(self) -> list[int]:
+        """Use training-style sparse frames: 0, interval, ..., current frame."""
+        if self._saved_frames <= 0:
+            return []
+
+        last_idx = self._saved_frames - 1
+        indices = list(range(0, self._saved_frames, self.planner_frame_interval))
+        if not indices or indices[-1] != last_idx:
+            indices.append(last_idx)
+        return indices
 
     def generate_anwser(self, inputs=None):
         payload = inputs if isinstance(inputs, dict) else self._build_request_payload()

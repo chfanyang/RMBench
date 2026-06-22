@@ -65,6 +65,7 @@ def build_config(frame_dir):
             "max_frames": 8,
             "max_new_tokens": 32,
             "frame_stride": 1,
+            "planner_frame_interval": 30,
             "frame_dir": frame_dir,
             "strict": False,
         },
@@ -101,8 +102,16 @@ def main():
         assert call["json"]["fps"] == 1
         assert call["json"]["max_frames"] == 8
         assert call["json"]["max_new_tokens"] == 32
+        assert call["json"]["frame_indices"] == [0]
         assert planner.last_parsed_json["next_subgoal"] == "cover the right block"
         assert planner.last_used_fallback is False
+
+        for _ in range(1, 193):
+            planner.append_frame_array(rgb)
+        instruction = planner.generate_anwser()
+        assert instruction == "next_subtask: cover the right block."
+        call = fake_requests.calls[-1]
+        assert call["json"]["frame_indices"] == [0, 30, 60, 90, 120, 150, 180, 192]
 
         fake_requests.fail = True
         fallback = planner.generate_anwser()

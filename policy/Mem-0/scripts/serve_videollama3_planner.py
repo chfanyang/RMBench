@@ -379,6 +379,9 @@ def main():
         fps: Optional[int] = None
         max_frames: Optional[int] = None
         max_new_tokens: Optional[int] = None
+        frame_indices: Optional[List[int]] = None
+        start_time: Optional[float] = None
+        end_time: Optional[float] = None
         strict: bool = False
 
     service = VideoLLaMA3PlannerService(args)
