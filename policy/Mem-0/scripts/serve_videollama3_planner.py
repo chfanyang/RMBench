@@ -12,6 +12,17 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+MEM0_ROOT = Path(__file__).resolve().parents[1]
+if str(MEM0_ROOT) not in sys.path:
+    sys.path.insert(0, str(MEM0_ROOT))
+
+from source.models.planning_module.planner_state import (
+    PlannerState,
+    PlannerStateError,
+    planner_state_from_dict,
+    planner_state_from_text,
+)
+
 # Keep the existing HuggingFace cache for model files, but place dynamic
 # remote-code modules in /tmp so restricted worktrees do not block startup.
 os.environ.setdefault("HF_MODULES_CACHE", "/tmp/videollama3_hf_modules")
@@ -100,19 +111,36 @@ def make_response(
     subgoal: str = "",
     used_fallback: bool = False,
     error: Optional[str] = None,
+    plan: Optional[PlannerState] = None,
 ) -> Dict[str, Any]:
     clean_subgoal = (subgoal or "").strip().rstrip(".")
     if not clean_subgoal:
         clean_subgoal = "continue the task"
         used_fallback = True
+    if plan is None:
+        plan = PlannerState(
+            current_subgoal=clean_subgoal,
+            current_status="in_progress",
+            next_subgoal=clean_subgoal,
+            should_switch=False,
+            task_status="running",
+            instruction=f"next_subtask: {clean_subgoal}.",
+            raw_text=raw_output or "",
+        )
     return {
         "ok": ok,
         "raw_output": raw_output or "",
+        "raw_text": raw_output or "",
         "parsed_json": parsed_json or {},
         "regex_subgoal": regex_subgoal,
         "subgoal": clean_subgoal,
         "used_fallback": used_fallback,
-        "instruction": f"next_subtask: {clean_subgoal}.",
+        "current_subgoal": plan.current_subgoal,
+        "current_status": plan.current_status,
+        "next_subgoal": plan.next_subgoal,
+        "should_switch": plan.should_switch,
+        "task_status": plan.task_status,
+        "instruction": plan.as_next_subtask_text(),
         "error": error,
     }
 
@@ -232,23 +260,33 @@ class VideoLLaMA3PlannerService:
             return make_response(False, used_fallback=True, error=frame_error)
 
         if self.args.no_load_model or self.args.dry_run:
+            dry_plan = PlannerState(
+                current_subgoal="continue the task",
+                current_status="in_progress",
+                next_subgoal="continue the task",
+                should_switch=False,
+                task_status="running",
+                raw_text='{"current_subgoal":"continue the task","current_status":"in_progress","next_subgoal":"continue the task","should_switch":false,"task_status":"running"}',
+            )
             return make_response(
                 True,
-                raw_output='{"next_subgoal":"continue the task"}',
-                parsed_json={"next_subgoal": "continue the task"},
+                raw_output=dry_plan.raw_text,
+                parsed_json=dry_plan.to_dict(),
                 subgoal="continue the task",
                 used_fallback=False,
+                plan=dry_plan,
             )
 
         try:
             raw_output = self._generate(payload, frame_dir)
             parsed = parse_json_object(raw_output) or {}
-            regex_subgoal = None if parsed else extract_subgoal_field(raw_output)
-            subgoal = str(parsed.get("next_subgoal") or parsed.get("current_subgoal") or regex_subgoal or "").strip()
-            used_fallback = False
-            if not subgoal:
+            regex_subgoal = extract_subgoal_field(raw_output) if not parsed else None
+            try:
+                plan = planner_state_from_dict(parsed, raw_text=raw_output)
+            except PlannerStateError as exc:
                 fallback = request_fallback_subgoal(payload)
                 if bool(payload.get("strict", False)):
+                    cprint(f"[VideoLLaMA3 server] invalid planner output: {exc}; raw output: {raw_output}")
                     return make_response(
                         False,
                         raw_output=raw_output,
@@ -258,8 +296,26 @@ class VideoLLaMA3PlannerService:
                         used_fallback=True,
                         error="planner-output-invalid",
                     )
-                subgoal = fallback
-                used_fallback = True
+                plan = PlannerState(
+                    current_subgoal=fallback.rstrip("."),
+                    current_status="in_progress",
+                    next_subgoal=fallback.rstrip("."),
+                    should_switch=False,
+                    task_status="running",
+                    instruction=f"next_subtask: {fallback.rstrip('.')}.",
+                    raw_text=raw_output,
+                )
+                return make_response(
+                    True,
+                    raw_output=raw_output,
+                    parsed_json=parsed,
+                    regex_subgoal=regex_subgoal,
+                    subgoal=fallback,
+                    used_fallback=True,
+                    plan=plan,
+                    error=f"planner-output-invalid: {exc}",
+                )
+            subgoal = plan.execution_instruction(self.last_subgoal)
             self.last_subgoal = subgoal.rstrip(".")
             return make_response(
                 True,
@@ -267,7 +323,8 @@ class VideoLLaMA3PlannerService:
                 parsed_json=parsed,
                 regex_subgoal=regex_subgoal,
                 subgoal=subgoal,
-                used_fallback=used_fallback,
+                used_fallback=False,
+                plan=plan,
             )
         except Exception as exc:
             return make_response(False, used_fallback=True, error=repr(exc))
@@ -375,6 +432,8 @@ def main():
         initial_observation: str = ""
         finished_subtasks: List[str] = Field(default_factory=list)
         previous_subgoal: str = ""
+        prompt: Optional[str] = None
+        question: Optional[str] = None
         key_information: List[Any] = Field(default_factory=list)
         fps: Optional[int] = None
         max_frames: Optional[int] = None
@@ -382,7 +441,7 @@ def main():
         frame_indices: Optional[List[int]] = None
         start_time: Optional[float] = None
         end_time: Optional[float] = None
-        strict: bool = False
+        strict: bool = True
 
     service = VideoLLaMA3PlannerService(args)
     app = FastAPI(title="VideoLLaMA3 Planner Server")

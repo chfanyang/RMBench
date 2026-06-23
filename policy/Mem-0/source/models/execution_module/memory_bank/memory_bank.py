@@ -612,10 +612,11 @@ class MemoryBank(nn.Module):
         text_vector: torch.Tensor,
         classifier, # SubtaskEndClassifier
         episode_id: int,
+        use_classifier: bool = True,
     ) -> Tuple[torch.Tensor, torch.Tensor, bool]:
         """
         Process a new vector through the memory bank during evaluation.
-        In evaluation mode: uses the classifier to detect subtask boundaries.
+        In evaluation mode: optionally uses the classifier to detect subtask boundaries.
         
         Uses the same logic as _forward_sequential:
         1. Update anchor first (if empty)
@@ -713,14 +714,16 @@ class MemoryBank(nn.Module):
         
         summary_vector = torch.cat([fused_sliding_vector, fused_anchor_vector, text_vector], dim=2) #(1, 1, 3*H)
         
-        with torch.autocast("cuda", dtype=torch.float32):
-            cls_output = classifier.predict(summary_vector)  # (1, 1, 3*H) -> (1, 1)
-        sub_end_flag = (cls_output["prob"] >= 0.5).item()
+        sub_end_flag = False
+        if use_classifier:
+            with torch.autocast("cuda", dtype=torch.float32):
+                cls_output = classifier.predict(summary_vector)  # (1, 1, 3*H) -> (1, 1)
+            sub_end_flag = (cls_output["prob"] >= 0.5).item()
             
         # Update end signal count and clear memory if threshold reached
         if self.end_signal_count.get(episode_id, None) is None:
             self.end_signal_count[episode_id] = 0
-        if sub_end_flag:
+        if use_classifier and sub_end_flag:
             self.end_signal_count[episode_id] += 1
             # Clear memory only when end signal count reaches threshold
             # if self.end_signal_count[episode_id] >= self.memory_accumulation:

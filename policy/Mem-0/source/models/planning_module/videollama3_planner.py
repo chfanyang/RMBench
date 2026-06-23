@@ -1,9 +1,4 @@
-"""VideoLLaMA3 high-level planner adapter for Mem-0 deployment.
-
-Phase 1 only replaces the high-level planner. The existing execution module,
-subtask-end classifier, threshold, and switching timing remain owned by
-MemoryMattersAgent.
-"""
+"""VideoLLaMA3 high-level planner adapter for Mem-0 deployment."""
 
 import json
 import os
@@ -16,6 +11,12 @@ from typing import Any, Dict, Optional
 import numpy as np
 import torch
 from PIL import Image
+
+from source.models.planning_module.planner_state import (
+    PlannerState,
+    PlannerStateError,
+    planner_state_from_text,
+)
 
 try:
     from termcolor import cprint
@@ -49,6 +50,7 @@ class VideoLLaMA3Planner:
         self.frame_dir = Path(str(self._cfg_get(self.config, "frame_dir", "./_tmp_visual/vl3_stream_frames")))
         self.attn_implementation = self._cfg_get(self.config, "attn_implementation", None)
         self.load_model_on_init = bool(self._cfg_get(self.config, "load_model", True))
+        self.strict = self._cfg_bool(self._cfg_get(self.config, "strict", True), default=True)
 
         self.model = None
         self.processor = None
@@ -61,6 +63,7 @@ class VideoLLaMA3Planner:
         self._last_subgoal = ""
         self._last_raw_output = ""
         self._last_instruction = ""
+        self.last_plan = None
 
         self.reset_stream()
         if self.load_model_on_init:
@@ -76,6 +79,20 @@ class VideoLLaMA3Planner:
             return cfg.get(key, default)
         except Exception:
             return getattr(cfg, key, default)
+
+    @staticmethod
+    def _cfg_bool(value: Any, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in ("true", "1", "yes", "y"):
+                return True
+            if normalized in ("false", "0", "no", "n"):
+                return False
+        return bool(value)
 
     def _select_vl3_config(self, cfg: Optional[Any]) -> Any:
         nested = self._cfg_get(cfg, "videollama3", None)
@@ -181,6 +198,7 @@ class VideoLLaMA3Planner:
         self._last_subgoal = ""
         self._last_raw_output = ""
         self._last_instruction = ""
+        self.last_plan = None
 
     def append_frame_array(self, rgb: np.ndarray) -> None:
         """Append one RGB frame from the environment, honoring frame_stride."""
@@ -234,7 +252,18 @@ class VideoLLaMA3Planner:
 
     @torch.inference_mode()
     def generate_anwser(self, inputs=None):
-        """Generate planning JSON and return Mem-0 compatible next_subtask text."""
+        """Compatibility wrapper returning the old next_subtask text."""
+        plan = self.plan(inputs)
+        instruction = plan.as_next_subtask_text(self._last_subgoal)
+        self._last_instruction = instruction
+        new_instruction = plan.execution_instruction(self._last_subgoal)
+        if new_instruction:
+            self._last_subgoal = new_instruction.rstrip(".")
+        return instruction
+
+    @torch.inference_mode()
+    def plan(self, inputs=None) -> PlannerState:
+        """Generate and validate a structured VideoLLaMA3 planner state."""
         if self._saved_frames == 0 and self.initial_observation is not None:
             self._append_initial_observation_as_frame()
 
@@ -285,10 +314,33 @@ class VideoLLaMA3Planner:
             text = self.processor.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
 
         self._last_raw_output = text
-        plan = self.parse_planning_json(text)
-        subgoal = self._choose_subgoal(plan, text)
-        self._last_instruction = f"next_subtask: {subgoal}."
-        return self._last_instruction
+        try:
+            plan = planner_state_from_text(text)
+        except PlannerStateError as exc:
+            cprint(
+                f"[VideoLLaMA3Planner] invalid structured output: {exc}; raw output: {text}",
+                "red",
+            )
+            if self.strict:
+                raise
+            subgoal = self._last_subgoal or self.global_task or "continue the task"
+            plan = PlannerState(
+                current_subgoal=subgoal.rstrip("."),
+                current_status="in_progress",
+                next_subgoal=subgoal.rstrip("."),
+                should_switch=False,
+                task_status="running",
+                instruction=f"next_subtask: {subgoal.rstrip('.')}.",
+                raw_text=text,
+            )
+
+        self.last_plan = plan
+        self._last_json = plan.to_dict()
+        new_instruction = plan.execution_instruction(self._last_subgoal)
+        if new_instruction:
+            self._last_subgoal = new_instruction.rstrip(".")
+        self._last_instruction = plan.as_next_subtask_text(self._last_subgoal)
+        return plan
 
     def _append_initial_observation_as_frame(self) -> None:
         obs = self.initial_observation

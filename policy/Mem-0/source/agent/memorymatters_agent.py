@@ -9,6 +9,7 @@ from typing import Dict, Optional
 import shutil
 import numpy as np
 import torch
+from PIL import Image
 from termcolor import cprint
 from omegaconf import OmegaConf
 
@@ -16,6 +17,7 @@ from source.models.execution_module.memorymatters_executor import MemoryMattersE
 from source.models.planning_module.memorymatters_planner import MemoryMattersPlanner
 from source.models.planning_module.videollama3_planner import VideoLLaMA3Planner
 from source.models.planning_module.videollama3_planner_client import VideoLLaMA3PlannerClient
+from source.models.planning_module.planner_state import PlannerState
 from source.training.utils.trainer_tools import resize_images
 import source.utils.pil_tools as pil_tools
 
@@ -40,6 +42,13 @@ class MemoryMattersAgent:
         self.action_horizon = self.config.get("action_horizon", 30)
         self.action_strip = self.action_horizon
         self.threshold = self.config.get("threshold", 2)
+        self.planner_type = self._normalize_planner_type(self.config.get("planner_type", "memorymatters"))
+        self.structured_planner = self.planner_type in ("videollama3_local", "videollama3_server")
+        self.use_classifier_switch = self._cfg_bool(
+            self.config.get("use_classifier_switch", not self.structured_planner),
+            default=not self.structured_planner,
+        )
+        self.planner_query_interval = max(1, int(self.config.get("planner_query_interval", 30)))
         
         self._last_fused = None
         self._last_original = None
@@ -57,20 +66,45 @@ class MemoryMattersAgent:
        
         self.high_model = self._build_high_model()
         cprint (f"global_task = {self.config.get ('global_task', '')}", "red")  
+        cprint(
+            f"[deploy] planner_type={self.planner_type}; "
+            f"use_classifier_switch={self.use_classifier_switch}; "
+            f"planner_query_interval={self.planner_query_interval}",
+            "cyan",
+        )
         
         # reset tmp video folder
         shutil.rmtree ("./_tmp_visual/", ignore_errors = True)
         os.makedirs ("./_tmp_visual/", exist_ok = True)
         
         self.instruction = ""
+        self.last_plan: Optional[PlannerState] = None
+        self.task_finished = False
 
-    def _build_high_model(self):
-        planner_type = str(self.config.get("planner_type", "memorymatters")).lower()
+    @staticmethod
+    def _normalize_planner_type(planner_type):
+        planner_type = str(planner_type or "memorymatters").lower()
         if planner_type == "videollama3":
             cprint("[deploy] planner_type=videollama3 is deprecated; using videollama3_local", "yellow")
             planner_type = "videollama3_local"
+        return planner_type
 
-        if planner_type == "videollama3_local":
+    @staticmethod
+    def _cfg_bool(value, default=False):
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in ("true", "1", "yes", "y"):
+                return True
+            if normalized in ("false", "0", "no", "n"):
+                return False
+        return bool(value)
+
+    def _build_high_model(self):
+        if self.planner_type == "videollama3_local":
             cprint("[deploy] high-level planner: VideoLLaMA3Planner (local debug; loads model in RMBench process)", "cyan")
             return VideoLLaMA3Planner(
                 config=self.config,
@@ -78,15 +112,15 @@ class MemoryMattersAgent:
                 device=self.device,
             )
 
-        if planner_type == "videollama3_server":
+        if self.planner_type == "videollama3_server":
             cprint("[deploy] high-level planner: VideoLLaMA3PlannerClient (HTTP server)", "cyan")
             return VideoLLaMA3PlannerClient(
                 config=self.config,
                 global_task=self.config.get("global_task", ""),
             )
 
-        if planner_type != "memorymatters":
-            cprint(f"[deploy] unknown planner_type={planner_type}; falling back to memorymatters", "yellow")
+        if self.planner_type != "memorymatters":
+            cprint(f"[deploy] unknown planner_type={self.planner_type}; falling back to memorymatters", "yellow")
 
         cprint("[deploy] high-level planner: MemoryMattersPlanner", "cyan")
         return MemoryMattersPlanner (
@@ -191,11 +225,45 @@ class MemoryMattersAgent:
             del self.ffmpeg
         
     def get_instruction (self):
+        if self.structured_planner:
+            self.query_planner()
+            return
+
         qwen_inputs = self.high_model.prepare_qwen_input()
         answer = self.high_model.generate_anwser (qwen_inputs)
         subtask = answer.split("next_subtask: ")[-1].split(".")[0]
         self.instruction = subtask
         cprint (f"[deploy] high-level instruction: {self.instruction}", "cyan")
+
+    def query_planner(self) -> PlannerState:
+        if not self.structured_planner:
+            raise RuntimeError("query_planner is only available for VideoLLaMA3 structured planners")
+        if not hasattr(self.high_model, "plan"):
+            raise RuntimeError("VideoLLaMA3 planner does not expose plan()")
+
+        inputs = self.high_model.prepare_qwen_input()
+        plan = self.high_model.plan(inputs)
+        self.last_plan = plan
+
+        previous_instruction = self.instruction
+        if plan.task_status == "completed":
+            self.task_finished = True
+        else:
+            selected = plan.execution_instruction(previous_instruction)
+            if selected:
+                self.instruction = selected
+
+        cprint(
+            "[deploy][VideoLLaMA3-only switch] "
+            f"step={self.iter}; current_instruction={previous_instruction!r}; "
+            f"raw={plan.raw_text}; current_subgoal={plan.current_subgoal!r}; "
+            f"current_status={plan.current_status}; next_subgoal={plan.next_subgoal!r}; "
+            f"should_switch={plan.should_switch}; task_status={plan.task_status}; "
+            f"selected_instruction={self.instruction!r}; "
+            f"finished_subtasks={getattr(self.high_model, 'finished_subtasks', [])}",
+            "cyan",
+        )
+        return plan
     
     def init_high_with_image (self):
         self.high_model.update_initial_observation ("./_tmp_visual/init.png")
@@ -207,6 +275,25 @@ class MemoryMattersAgent:
         self.get_instruction ()
         self.stage += 1
         self._set_video_ffmpeg ()
+
+    def apply_planner_switch(self, rgb=None) -> None:
+        """Commit a VideoLLaMA3-decided subtask switch and reset low-level state."""
+        if not self.structured_planner:
+            return
+        completed = self.last_plan.current_subgoal if self.last_plan else self.instruction
+        if rgb is not None:
+            Image.fromarray(rgb).save(f"./_tmp_visual/image_{self.stage}.png")
+        if hasattr(self.high_model, "update_image_or_video_input"):
+            self.high_model.update_image_or_video_input([f"./_tmp_visual/image_{self.stage}.png"], [completed])
+        self.stage += 1
+        self.end_signal_count = 0
+        self.action_count = 0
+        self.executor.memory_bank.reset()
+        cprint(
+            f"[deploy][VideoLLaMA3-only switch] switching to stage {self.stage}; "
+            f"instruction={self.instruction!r}; completed={completed!r}",
+            "green",
+        )
 
     def _load_ckpt(self, ckpt_path: str) -> None:
         """Load checkpoint if provided; warn otherwise."""
@@ -249,6 +336,8 @@ class MemoryMattersAgent:
         self.end_signal_count = 0
         self.action_count = 0
         self._time_action_history = {}
+        self.last_plan = None
+        self.task_finished = False
         
         if hasattr(self.high_model, "reset_episode"):
             self.high_model.reset_episode()
@@ -264,7 +353,7 @@ class MemoryMattersAgent:
         self.instruction = ""
 
     @torch.inference_mode()
-    def update_obs(self, obs_payload: Dict[str, object]):
+    def update_obs(self, obs_payload: Dict[str, object], use_classifier: Optional[bool] = None):
         """
         Update MemoryBank without running action head; cache fused feature for next action.
 
@@ -290,7 +379,15 @@ class MemoryMattersAgent:
         image_feature, text_feature = self.executor.qwen_model.extract_features(qwen_inputs.input_ids, last_hidden_state) # (batch_size, 1, hidden_size), (batch_size, 1, hidden_size)
         
         # Step 2: Memory Fusion and Update
-        memory_fusion_output, anchor_output, sub_end_flag = self.executor.memory_bank.update_on_eval(image_feature, text_feature, self.executor.classifier, episode_id=self.episode_id) # anchor_output: (batch_size, 1, hidden_size), memory_fusion_output: (batch_size, 1, hidden_size), sub_end_flag: bool
+        if use_classifier is None:
+            use_classifier = self.use_classifier_switch
+        memory_fusion_output, anchor_output, sub_end_flag = self.executor.memory_bank.update_on_eval(
+            image_feature,
+            text_feature,
+            self.executor.classifier,
+            episode_id=self.episode_id,
+            use_classifier=use_classifier,
+        ) # anchor_output: (batch_size, 1, hidden_size), memory_fusion_output: (batch_size, 1, hidden_size), sub_end_flag: bool
 
         summary_features = torch.cat([memory_fusion_output, anchor_output, text_feature], dim=1) # (batch_size, 3, hidden_size)
         fused = summary_features
@@ -310,14 +407,19 @@ class MemoryMattersAgent:
         else:
             self._last_state = None
 
-        self.end_signal_count += sub_end_flag
+        if use_classifier:
+            self.end_signal_count += sub_end_flag
         self.action_count += 1
-        if self.end_signal_count != self.executor.memory_bank.end_signal_count[self.episode_id]:
+        if use_classifier and self.end_signal_count != self.executor.memory_bank.end_signal_count[self.episode_id]:
             cprint(
                 f"mismatch in end_signal_count: agent {self.end_signal_count} vs memory_bank {self.executor.memory_bank.end_signal_count[self.episode_id]}",
                 "red"
             )
         return sub_end_flag
+
+    @torch.inference_mode()
+    def update_obs_without_classifier(self, obs_payload: Dict[str, object]):
+        return self.update_obs(obs_payload, use_classifier=False)
 
     @torch.inference_mode()
     def get_action(self) -> dict:

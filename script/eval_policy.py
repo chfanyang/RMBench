@@ -315,6 +315,9 @@ def eval_policy(task_name,
             if TASK_ENV.eval_success:
                 succ = True
                 break
+            if getattr(model, "task_finished", False):
+                print("[eval] planner reported task_status=completed; stopping episode without overriding env success.")
+                break
         task_total_reward += TASK_ENV.max_reward
         if TASK_ENV.eval_video_path is not None:
             TASK_ENV._del_eval_video_ffmpeg()

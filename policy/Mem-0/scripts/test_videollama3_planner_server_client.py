@@ -44,11 +44,23 @@ class FakeRequests:
         return FakeResponse(
             {
                 "ok": True,
-                "raw_output": '{"next_subgoal":"cover the right block"}',
-                "parsed_json": {"next_subgoal": "cover the right block"},
+                "raw_output": '{"current_subgoal":"cover the right block","current_status":"in_progress","next_subgoal":"cover the right block","should_switch":false,"task_status":"running"}',
+                "raw_text": '{"current_subgoal":"cover the right block","current_status":"in_progress","next_subgoal":"cover the right block","should_switch":false,"task_status":"running"}',
+                "parsed_json": {
+                    "current_subgoal": "cover the right block",
+                    "current_status": "in_progress",
+                    "next_subgoal": "cover the right block",
+                    "should_switch": False,
+                    "task_status": "running",
+                },
                 "regex_subgoal": None,
                 "subgoal": "cover the right block",
                 "used_fallback": False,
+                "current_subgoal": "cover the right block",
+                "current_status": "in_progress",
+                "next_subgoal": "cover the right block",
+                "should_switch": False,
+                "task_status": "running",
                 "instruction": "next_subtask: cover the right block.",
                 "error": None,
             }
@@ -104,6 +116,8 @@ def main():
         assert call["json"]["max_new_tokens"] == 32
         assert call["json"]["frame_indices"] == [0]
         assert planner.last_parsed_json["next_subgoal"] == "cover the right block"
+        assert planner.last_plan.current_subgoal == "cover the right block"
+        assert planner.last_plan.current_status == "in_progress"
         assert planner.last_used_fallback is False
 
         for _ in range(1, 193):
@@ -129,6 +143,7 @@ def main():
         assert planner.last_used_fallback is False
         assert planner.last_instruction == ""
         assert planner.last_server_response == {}
+        assert planner.last_plan is None
 
     print("VideoLLaMA3PlannerClient server/client smoke test passed without loading model weights.")
 

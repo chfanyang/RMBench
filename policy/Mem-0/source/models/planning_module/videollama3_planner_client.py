@@ -13,6 +13,12 @@ from typing import Any, Dict, Optional
 import numpy as np
 from PIL import Image
 
+from source.models.planning_module.planner_state import (
+    PlannerState,
+    PlannerStateError,
+    planner_state_from_dict,
+)
+
 try:
     from termcolor import cprint
 except Exception:
@@ -55,7 +61,7 @@ class VideoLLaMA3PlannerClient:
             self._cfg_get(self._select_local_config(config), "frame_dir", "./_tmp_visual/vl3_stream_frames"),
         )
         self.frame_dir = Path(str(frame_dir)).expanduser().resolve()
-        self.strict = bool(self._cfg_get(self.config, "strict", False))
+        self.strict = self._cfg_bool(self._cfg_get(self.config, "strict", True), default=True)
 
         self.initial_observation = None
         self.key_information = []
@@ -70,6 +76,7 @@ class VideoLLaMA3PlannerClient:
         self.last_used_fallback = False
         self.last_instruction = ""
         self.last_server_response: Dict[str, Any] = {}
+        self.last_plan: Optional[PlannerState] = None
 
         self.reset_stream()
 
@@ -84,13 +91,49 @@ class VideoLLaMA3PlannerClient:
         except Exception:
             return getattr(cfg, key, default)
 
+    @staticmethod
+    def _cfg_bool(value: Any, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in ("true", "1", "yes", "y"):
+                return True
+            if normalized in ("false", "0", "no", "n"):
+                return False
+        return bool(value)
+
     def _select_server_config(self, cfg: Optional[Any]) -> Any:
         nested = self._cfg_get(cfg, "videollama3_server", None)
-        return nested if nested is not None else {}
+        merged = {}
+        if nested is not None:
+            try:
+                merged.update(dict(nested))
+            except Exception:
+                return nested
+        if isinstance(cfg, dict):
+            prefix = "videollama3_server."
+            for key, value in cfg.items():
+                if isinstance(key, str) and key.startswith(prefix):
+                    merged[key[len(prefix):]] = value
+        return merged
 
     def _select_local_config(self, cfg: Optional[Any]) -> Any:
         nested = self._cfg_get(cfg, "videollama3", None)
-        return nested if nested is not None else {}
+        merged = {}
+        if nested is not None:
+            try:
+                merged.update(dict(nested))
+            except Exception:
+                return nested
+        if isinstance(cfg, dict):
+            prefix = "videollama3."
+            for key, value in cfg.items():
+                if isinstance(key, str) and key.startswith(prefix):
+                    merged[key[len(prefix):]] = value
+        return merged
 
     def _get_requests(self):
         global requests
@@ -124,6 +167,7 @@ class VideoLLaMA3PlannerClient:
         self.last_used_fallback = False
         self.last_instruction = ""
         self.last_server_response = {}
+        self.last_plan = None
 
     def append_frame_array(self, rgb: np.ndarray) -> None:
         if rgb is None:
@@ -187,6 +231,14 @@ class VideoLLaMA3PlannerClient:
         return indices
 
     def generate_anwser(self, inputs=None):
+        plan = self.plan(inputs)
+        instruction = plan.as_next_subtask_text(self._last_subgoal)
+        self.last_instruction = instruction
+        if plan.execution_instruction(self._last_subgoal):
+            self._last_subgoal = plan.execution_instruction(self._last_subgoal).rstrip(".")
+        return instruction
+
+    def plan(self, inputs=None) -> PlannerState:
         payload = inputs if isinstance(inputs, dict) else self._build_request_payload()
         try:
             requests_mod = self._get_requests()
@@ -194,29 +246,30 @@ class VideoLLaMA3PlannerClient:
             response.raise_for_status()
             data = response.json()
         except Exception as exc:
-            fallback = self._fallback_instruction()
-            cprint(f"[VideoLLaMA3PlannerClient] planner server request failed: {exc}; using {fallback}", "yellow")
+            if self.strict:
+                raise RuntimeError(f"VideoLLaMA3 planner server request failed: {exc}") from exc
+            fallback = self._fallback_state(error=str(exc))
+            cprint(
+                f"[VideoLLaMA3PlannerClient] planner server request failed: {exc}; "
+                f"using {fallback.as_next_subtask_text(self._last_subgoal)}",
+                "yellow",
+            )
             self.last_used_fallback = True
-            self.last_instruction = fallback
+            self.last_instruction = fallback.as_next_subtask_text(self._last_subgoal)
             self.last_server_response = {"ok": False, "error": str(exc)}
+            self.last_plan = fallback
             return fallback
 
         self.last_server_response = data
-        self.last_raw_output = str(data.get("raw_output", ""))
+        self.last_raw_output = str(data.get("raw_text", data.get("raw_output", "")))
         parsed = data.get("parsed_json", {})
         self.last_parsed_json = parsed if isinstance(parsed, dict) else {}
         self.last_regex_subgoal = data.get("regex_subgoal")
         self.last_used_fallback = bool(data.get("used_fallback", False))
 
-        instruction = str(data.get("instruction") or "").strip()
-        if not instruction:
-            instruction = self._fallback_instruction()
-            self.last_used_fallback = True
-            cprint("[VideoLLaMA3PlannerClient] server returned empty instruction; using fallback", "yellow")
-
-        self.last_instruction = instruction
         if not bool(data.get("ok", False)):
             raw_preview = self.last_raw_output[:240].replace("\n", "\\n")
+            instruction = str(data.get("instruction") or self._fallback_instruction()).strip()
             cprint(
                 "[VideoLLaMA3PlannerClient] planner server returned ok=false; "
                 f"error={data.get('error')}; "
@@ -225,12 +278,52 @@ class VideoLLaMA3PlannerClient:
                 f"instruction={instruction}",
                 "yellow",
             )
-        subgoal = str(data.get("subgoal") or "").strip()
-        if subgoal:
-            self._last_subgoal = subgoal.rstrip(".")
-        elif instruction.startswith("next_subtask: "):
-            self._last_subgoal = instruction.split("next_subtask: ", 1)[-1].rsplit(".", 1)[0].strip()
-        return instruction
+            if self.strict:
+                raise RuntimeError(f"VideoLLaMA3 planner server returned ok=false: {data.get('error')}")
+
+        try:
+            plan = self._state_from_server_response(data)
+        except PlannerStateError as exc:
+            raw_preview = self.last_raw_output[:240].replace("\n", "\\n")
+            cprint(
+                "[VideoLLaMA3PlannerClient] invalid planner schema; "
+                f"error={exc}; raw_output_prefix={raw_preview!r}",
+                "red",
+            )
+            if self.strict:
+                raise
+            plan = self._fallback_state(error=str(exc))
+            self.last_used_fallback = True
+
+        self.last_plan = plan
+        self.last_instruction = plan.as_next_subtask_text(self._last_subgoal)
+        new_instruction = plan.execution_instruction(self._last_subgoal)
+        if new_instruction:
+            self._last_subgoal = new_instruction.rstrip(".")
+        return plan
+
+    def _state_from_server_response(self, data: Dict[str, Any]) -> PlannerState:
+        state = {
+            "current_subgoal": data.get("current_subgoal"),
+            "current_status": data.get("current_status"),
+            "next_subgoal": data.get("next_subgoal"),
+            "should_switch": data.get("should_switch"),
+            "task_status": data.get("task_status"),
+            "instruction": data.get("instruction"),
+        }
+        return planner_state_from_dict(state, raw_text=self.last_raw_output)
+
+    def _fallback_state(self, error: str = "") -> PlannerState:
+        subgoal = self._last_subgoal or (self.finished_subtasks[-1] if self.finished_subtasks else "") or "continue the task"
+        return PlannerState(
+            current_subgoal=subgoal.rstrip("."),
+            current_status="in_progress",
+            next_subgoal=subgoal.rstrip("."),
+            should_switch=False,
+            task_status="running",
+            instruction=f"next_subtask: {subgoal.rstrip('.')}.",
+            raw_text=error,
+        )
 
     def _fallback_instruction(self) -> str:
         subgoal = self._last_subgoal or (self.finished_subtasks[-1] if self.finished_subtasks else "") or "continue the task"

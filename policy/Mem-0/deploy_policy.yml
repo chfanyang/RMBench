@@ -15,7 +15,9 @@ state_stats_path: ./policy/Mem-0/assets/x/norm_stats.json # TODO
 
 planning_module_config_path: ./policy/Mem-0/source/config/planning_module_inference.yaml
 vllm_url: http://localhost:8000 # TODO
-planner_type: memorymatters # options: memorymatters, videollama3_local, videollama3_server
+planner_type: videollama3_server # options: memorymatters, videollama3_local, videollama3_server
+use_classifier_switch: false
+planner_query_interval: 30
 
 # VideoLLaMA3 server planner is recommended for eval. It keeps peft/transformers
 # and the VideoLLaMA3 model in a separate videollama3 conda env.
@@ -27,7 +29,7 @@ videollama3_server:
   max_new_tokens: 128
   frame_stride: 1
   frame_dir: ./_tmp_visual/vl3_stream_frames
-  strict: false
+  strict: true
 
 # Local debug baseline. Set planner_type: videollama3_local to enable.
 # This loads VideoLLaMA3 inside the RMBench process and requires peft/transformers
@@ -45,6 +47,7 @@ videollama3:
   attn_implementation: flash_attention_2
   frame_stride: 1
   frame_dir: ./_tmp_visual/vl3_stream_frames_local
+  strict: true
 
 action_horizon: 30
 threshold: 2 # when subtask end signal count reaches this value, we consider the subtask ended and move to the next one

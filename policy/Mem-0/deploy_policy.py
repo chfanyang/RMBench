@@ -290,7 +290,10 @@ def eval(TASK_ENV, model: MemoryMattersAgent, observation: dict):
     encoded_obs = encode_obs(observation)
     
     if model.action_count == 0:
-        model.update_obs (encoded_obs)
+        if model.structured_planner and not model.use_classifier_switch:
+            model.update_obs_without_classifier(encoded_obs)
+        else:
+            model.update_obs(encoded_obs)
     result = model.get_action() 
     
     if result is None or len(result) == 0:
@@ -305,33 +308,67 @@ def eval(TASK_ENV, model: MemoryMattersAgent, observation: dict):
     
     # Execute only `action_strip` smoothed steps for current eval
     steps_to_run = min(model.action_strip, actions.shape[0])
+    executed_steps = 0
+    planner_switch_requested = False
     for idx in range(steps_to_run):
         action = actions[idx]
         TASK_ENV.take_action(action, action_type="qpos")
+        executed_steps += 1
         
         observation = TASK_ENV.get_obs()
         _append_planner_frame_from_obs(model, observation)
         observation["instruction"] = instruction
         encoded_obs = encode_obs(observation)
         
-        sub_end_flag = model.update_obs(encoded_obs)
+        if model.structured_planner and not model.use_classifier_switch:
+            sub_end_flag = model.update_obs_without_classifier(encoded_obs)
+        else:
+            sub_end_flag = model.update_obs(encoded_obs)
         
         # --- For Mn Tasks
         if model.task_type == "Mn":
-            if sub_end_flag == 1:
-                cprint (f"[deploy] subtask end signal += 1 on [{model.iter}]", "yellow") 
-            if model.end_signal_count >= model.threshold:
-                image = TASK_ENV.now_obs["observation"]["head_camera"]["rgb"]
-                Image.fromarray (image).save (f"./_tmp_visual/image_{model.stage}.png")
-                break
+            current_step = model.iter + executed_steps
+            if model.structured_planner and not model.use_classifier_switch:
+                if current_step % model.planner_query_interval == 0:
+                    plan = model.query_planner()
+                    if plan.task_status == "completed":
+                        cprint(
+                            f"[deploy][VideoLLaMA3-only switch] task completed by planner at step {current_step}",
+                            "green",
+                        )
+                        model.task_finished = False
+                        break
+                    planner_switch_requested = bool(plan.should_switch and plan.current_status == "completed")
+                    cprint(
+                        f"[deploy][VideoLLaMA3-only switch] step={current_step}; "
+                        f"switch_triggered={planner_switch_requested}",
+                        "cyan",
+                    )
+                    if planner_switch_requested:
+                        break
+            else:
+                if sub_end_flag == 1:
+                    cprint (f"[deploy] subtask end signal += 1 on [{model.iter}]", "yellow") 
+                if model.end_signal_count >= model.threshold:
+                    image = TASK_ENV.now_obs["observation"]["head_camera"]["rgb"]
+                    Image.fromarray (image).save (f"./_tmp_visual/image_{model.stage}.png")
+                    break
         # --- The End
         
     # Advance iteration by number of executed steps
-    model.iter += steps_to_run
+    model.iter += executed_steps
     
     # --- For Mn Tasks
     if model.task_type == "Mn":
-        if model.end_signal_count >= model.threshold:
+        if model.structured_planner and not model.use_classifier_switch:
+            if planner_switch_requested:
+                model.ffmpeg.stdin.write (TASK_ENV.now_obs["observation"]["head_camera"]["rgb"].tobytes ())
+                model._del_video_ffmpeg ()
+                model.apply_planner_switch(TASK_ENV.now_obs["observation"]["head_camera"]["rgb"])
+                model._set_video_ffmpeg ()
+                model.ffmpeg.stdin.write (TASK_ENV.now_obs["observation"]["head_camera"]["rgb"].tobytes ())
+                instruction = model.instruction
+        elif model.end_signal_count >= model.threshold:
             model.ffmpeg.stdin.write (TASK_ENV.now_obs["observation"]["head_camera"]["rgb"].tobytes ())
             model._del_video_ffmpeg ()
             cprint (f"[deploy] subtask end detected; moving to stage {model.stage + 1}, action_count {model.action_count}", "green")
