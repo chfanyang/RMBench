@@ -329,19 +329,49 @@ def eval(TASK_ENV, model: MemoryMattersAgent, observation: dict):
         if model.task_type == "Mn":
             current_step = model.iter + executed_steps
             if model.structured_planner and not model.use_classifier_switch:
-                if current_step % model.planner_query_interval == 0:
-                    plan = model.query_planner()
-                    if plan.task_status == "completed":
+                confirm_due = (
+                    model.pending_switch_plan is not None
+                    and model.pending_switch_step is not None
+                    and current_step - model.pending_switch_step >= model.planner_switch_confirm_steps
+                )
+                regular_query_due = (
+                    model.pending_switch_plan is None
+                    and current_step % model.planner_query_interval == 0
+                )
+                if regular_query_due or confirm_due:
+                    plan = model.query_planner(update_instruction=False, current_step=current_step)
+                    # if plan.task_status == "completed":
+                    #     cprint(
+                    #         f"[deploy][VideoLLaMA3-only switch] task completed by planner at step {current_step}",
+                    #         "green",
+                    #     )
+                    #     model.task_finished = True
+                    #     break
+                    switch_candidate = bool(plan.should_switch and plan.current_status == "completed")
+                    planner_switch_requested = bool(confirm_due and switch_candidate)
+                    if regular_query_due and switch_candidate:
+                        model.pending_switch_plan = plan
+                        model.pending_switch_step = current_step
                         cprint(
-                            f"[deploy][VideoLLaMA3-only switch] task completed by planner at step {current_step}",
-                            "green",
+                            f"[deploy][VideoLLaMA3-only switch] step={current_step}; "
+                            f"switch_candidate=True; will confirm after {model.planner_switch_confirm_steps} steps, "
+                            "continuing current action chunk",
+                            "yellow",
                         )
-                        model.task_finished = False
-                        break
-                    planner_switch_requested = bool(plan.should_switch and plan.current_status == "completed")
+                    elif confirm_due and not switch_candidate:
+                        if model.pending_switch_plan is not None:
+                            cprint(
+                                f"[deploy][VideoLLaMA3-only switch] step={current_step}; "
+                                "confirm query switch_candidate=False; clearing pending switch",
+                                "yellow",
+                            )
+                        model.pending_switch_plan = None
+                        model.pending_switch_step = None
                     cprint(
                         f"[deploy][VideoLLaMA3-only switch] step={current_step}; "
-                        f"switch_triggered={planner_switch_requested}",
+                        f"regular_query_due={regular_query_due}; confirm_due={confirm_due}; "
+                        f"switch_candidate={switch_candidate}; "
+                        f"switch_confirmed={planner_switch_requested}",
                         "cyan",
                     )
                     if planner_switch_requested:
@@ -362,6 +392,7 @@ def eval(TASK_ENV, model: MemoryMattersAgent, observation: dict):
     if model.task_type == "Mn":
         if model.structured_planner and not model.use_classifier_switch:
             if planner_switch_requested:
+                model.discard_action_history_from(model.iter)
                 model.ffmpeg.stdin.write (TASK_ENV.now_obs["observation"]["head_camera"]["rgb"].tobytes ())
                 model._del_video_ffmpeg ()
                 model.apply_planner_switch(TASK_ENV.now_obs["observation"]["head_camera"]["rgb"])

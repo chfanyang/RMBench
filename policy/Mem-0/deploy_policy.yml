@@ -18,6 +18,7 @@ vllm_url: http://localhost:8000 # TODO
 planner_type: videollama3_server # options: memorymatters, videollama3_local, videollama3_server
 use_classifier_switch: false
 planner_query_interval: 30
+planner_switch_confirm_steps: 3
 
 # VideoLLaMA3 server planner is recommended for eval. It keeps peft/transformers
 # and the VideoLLaMA3 model in a separate videollama3 conda env.

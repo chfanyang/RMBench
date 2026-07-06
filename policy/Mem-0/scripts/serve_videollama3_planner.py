@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -250,8 +251,17 @@ class VideoLLaMA3PlannerService:
         }
 
     def plan(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        request_t0 = time.perf_counter()
         frame_dir = str(payload.get("frame_dir") or "")
         global_task = str(payload.get("global_task") or "")
+        frame_indices = payload.get("frame_indices") or []
+        cprint(
+            "[VideoLLaMA3 server] /plan start; "
+            f"frame_dir={frame_dir}; "
+            f"frame_indices_count={len(frame_indices)}; "
+            f"last_frame_index={frame_indices[-1] if frame_indices else None}; "
+            f"strict={payload.get('strict')}"
+        )
         if not frame_dir or not global_task:
             return make_response(False, used_fallback=True, error="frame_dir and global_task are required")
 
@@ -279,6 +289,11 @@ class VideoLLaMA3PlannerService:
 
         try:
             raw_output = self._generate(payload, frame_dir)
+            cprint(
+                "[VideoLLaMA3 server] /plan generated; "
+                f"elapsed={time.perf_counter() - request_t0:.2f}s; "
+                f"raw_prefix={raw_output[:160]!r}"
+            )
             parsed = parse_json_object(raw_output) or {}
             regex_subgoal = extract_subgoal_field(raw_output) if not parsed else None
             try:
@@ -327,9 +342,14 @@ class VideoLLaMA3PlannerService:
                 plan=plan,
             )
         except Exception as exc:
+            cprint(
+                "[VideoLLaMA3 server] /plan failed; "
+                f"elapsed={time.perf_counter() - request_t0:.2f}s; error={repr(exc)}"
+            )
             return make_response(False, used_fallback=True, error=repr(exc))
 
     def _generate(self, payload: Dict[str, Any], frame_dir: str) -> str:
+        total_t0 = time.perf_counter()
         fps = int(payload.get("fps") or self.args.fps)
         max_frames = int(payload.get("max_frames") or self.args.max_frames)
         max_new_tokens = int(payload.get("max_new_tokens") or self.args.max_new_tokens)
@@ -340,6 +360,7 @@ class VideoLLaMA3PlannerService:
 
         from videollama3.mm_utils import load_video
 
+        t0 = time.perf_counter()
         frames, timestamps = load_video(
             video_path=str(frame_dir),
             start_time=start_time,
@@ -347,6 +368,11 @@ class VideoLLaMA3PlannerService:
             fps=fps,
             max_frames=max_frames,
             frame_indices=frame_indices,
+        )
+        cprint(
+            "[VideoLLaMA3 server] load_video done; "
+            f"elapsed={time.perf_counter() - t0:.2f}s; "
+            f"num_frames={len(frames)}; timestamps={timestamps}"
         )
         video_content = {
             "type": "video",
@@ -365,12 +391,19 @@ class VideoLLaMA3PlannerService:
                 ],
             },
         ]
+        t0 = time.perf_counter()
         model_inputs = self.processor(
             conversation=conversation,
             add_system_prompt=True,
             add_generation_prompt=True,
             return_tensors="pt",
         )
+        cprint(
+            "[VideoLLaMA3 server] processor done; "
+            f"elapsed={time.perf_counter() - t0:.2f}s; "
+            f"keys={list(model_inputs.keys())}"
+        )
+        t0 = time.perf_counter()
         for key, value in list(model_inputs.items()):
             if torch is not None and isinstance(value, torch.Tensor):
                 if key == "pixel_values":
@@ -378,8 +411,13 @@ class VideoLLaMA3PlannerService:
                     model_inputs[key] = value.to(device=self.args.device, dtype=dtype)
                 else:
                     model_inputs[key] = value.to(device=self.args.device)
+        cprint(
+            "[VideoLLaMA3 server] inputs_to_device done; "
+            f"elapsed={time.perf_counter() - t0:.2f}s"
+        )
 
         input_len = model_inputs["input_ids"].shape[1] if "input_ids" in model_inputs else None
+        t0 = time.perf_counter()
         with torch.inference_mode():
             output_ids = self.model.generate(
                 **model_inputs,
@@ -390,10 +428,21 @@ class VideoLLaMA3PlannerService:
                 top_k=None,
                 use_cache=True,
             )
+        cprint(
+            "[VideoLLaMA3 server] generate done; "
+            f"elapsed={time.perf_counter() - t0:.2f}s; "
+            f"input_len={input_len}; output_shape={tuple(output_ids.shape)}"
+        )
         gen_ids = output_ids[:, input_len:] if input_len is not None else output_ids
+        t0 = time.perf_counter()
         text = self.processor.batch_decode(gen_ids, skip_special_tokens=True)[0].strip()
         if not text:
             text = self.processor.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
+        cprint(
+            "[VideoLLaMA3 server] decode done; "
+            f"elapsed={time.perf_counter() - t0:.2f}s; "
+            f"total_elapsed={time.perf_counter() - total_t0:.2f}s"
+        )
         return text
 
 

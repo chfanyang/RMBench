@@ -49,6 +49,7 @@ class MemoryMattersAgent:
             default=not self.structured_planner,
         )
         self.planner_query_interval = max(1, int(self.config.get("planner_query_interval", 30)))
+        self.planner_switch_confirm_steps = max(1, int(self.config.get("planner_switch_confirm_steps", 3)))
         
         self._last_fused = None
         self._last_original = None
@@ -69,7 +70,8 @@ class MemoryMattersAgent:
         cprint(
             f"[deploy] planner_type={self.planner_type}; "
             f"use_classifier_switch={self.use_classifier_switch}; "
-            f"planner_query_interval={self.planner_query_interval}",
+            f"planner_query_interval={self.planner_query_interval}; "
+            f"planner_switch_confirm_steps={self.planner_switch_confirm_steps}",
             "cyan",
         )
         
@@ -79,6 +81,8 @@ class MemoryMattersAgent:
         
         self.instruction = ""
         self.last_plan: Optional[PlannerState] = None
+        self.pending_switch_plan: Optional[PlannerState] = None
+        self.pending_switch_step: Optional[int] = None
         self.task_finished = False
 
     @staticmethod
@@ -191,6 +195,12 @@ class MemoryMattersAgent:
                 steps.append(np.mean(np.stack(hist, axis=0), axis=0))
 
         return np.stack(steps, axis=0)
+
+    def discard_action_history_from(self, start: int) -> None:
+        """Drop cached future action predictions so the next eval recomputes them."""
+        stale_keys = [t for t in self._time_action_history.keys() if t >= start]
+        for t in stale_keys:
+            del self._time_action_history[t]
         
     def _set_video_ffmpeg (self):
         self.ffmpeg = subprocess.Popen(
@@ -226,7 +236,10 @@ class MemoryMattersAgent:
         
     def get_instruction (self):
         if self.structured_planner:
-            self.query_planner()
+            plan = self.query_planner(update_instruction=False)
+            selected = plan.execution_instruction(self.instruction)
+            if selected:
+                self.instruction = selected
             return
 
         qwen_inputs = self.high_model.prepare_qwen_input()
@@ -235,7 +248,7 @@ class MemoryMattersAgent:
         self.instruction = subtask
         cprint (f"[deploy] high-level instruction: {self.instruction}", "cyan")
 
-    def query_planner(self) -> PlannerState:
+    def query_planner(self, update_instruction: bool = False, current_step: Optional[int] = None) -> PlannerState:
         if not self.structured_planner:
             raise RuntimeError("query_planner is only available for VideoLLaMA3 structured planners")
         if not hasattr(self.high_model, "plan"):
@@ -248,18 +261,19 @@ class MemoryMattersAgent:
         previous_instruction = self.instruction
         if plan.task_status == "completed":
             self.task_finished = True
-        else:
+        elif update_instruction:
             selected = plan.execution_instruction(previous_instruction)
             if selected:
                 self.instruction = selected
 
         cprint(
             "[deploy][VideoLLaMA3-only switch] "
-            f"step={self.iter}; current_instruction={previous_instruction!r}; "
+            f"step={current_step if current_step is not None else self.iter}; "
+            f"iter_base={self.iter}; current_instruction={previous_instruction!r}; "
             f"raw={plan.raw_text}; current_subgoal={plan.current_subgoal!r}; "
             f"current_status={plan.current_status}; next_subgoal={plan.next_subgoal!r}; "
             f"should_switch={plan.should_switch}; task_status={plan.task_status}; "
-            f"selected_instruction={self.instruction!r}; "
+            f"selected_instruction={self.instruction!r}; update_instruction={update_instruction}; "
             f"finished_subtasks={getattr(self.high_model, 'finished_subtasks', [])}",
             "cyan",
         )
@@ -280,11 +294,18 @@ class MemoryMattersAgent:
         """Commit a VideoLLaMA3-decided subtask switch and reset low-level state."""
         if not self.structured_planner:
             return
-        completed = self.last_plan.current_subgoal if self.last_plan else self.instruction
+        switch_plan = self.pending_switch_plan or self.last_plan
+        completed = switch_plan.current_subgoal if switch_plan else self.instruction
+        if switch_plan is not None:
+            selected = switch_plan.execution_instruction(self.instruction)
+            if selected:
+                self.instruction = selected
         if rgb is not None:
             Image.fromarray(rgb).save(f"./_tmp_visual/image_{self.stage}.png")
         if hasattr(self.high_model, "update_image_or_video_input"):
             self.high_model.update_image_or_video_input([f"./_tmp_visual/image_{self.stage}.png"], [completed])
+        self.pending_switch_plan = None
+        self.pending_switch_step = None
         self.stage += 1
         self.end_signal_count = 0
         self.action_count = 0
@@ -337,6 +358,8 @@ class MemoryMattersAgent:
         self.action_count = 0
         self._time_action_history = {}
         self.last_plan = None
+        self.pending_switch_plan = None
+        self.pending_switch_step = None
         self.task_finished = False
         
         if hasattr(self.high_model, "reset_episode"):

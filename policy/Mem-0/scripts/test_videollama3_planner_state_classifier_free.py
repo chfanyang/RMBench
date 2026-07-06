@@ -75,9 +75,68 @@ def test_memory_bank_without_classifier():
     assert bank.end_signal_count[0] == 0
 
 
+def test_delayed_switch_confirmation():
+    first_plan = planner_state_from_dict(
+        {
+            "current_subgoal": "cover the left block",
+            "current_status": "completed",
+            "next_subgoal": "cover the middle block",
+            "should_switch": True,
+            "task_status": "running",
+        }
+    )
+    second_plan = planner_state_from_dict(
+        {
+            "current_subgoal": "cover the left block",
+            "current_status": "completed",
+            "next_subgoal": "cover the middle block",
+            "should_switch": True,
+            "task_status": "running",
+        }
+    )
+    confirm_steps = 3
+    pending = None
+    pending_step = None
+    current_step = 30
+    switch_candidate = first_plan.should_switch and first_plan.current_status == "completed"
+    assert switch_candidate is True
+    pending = first_plan
+    pending_step = current_step
+    should_replan_actions = True
+    assert should_replan_actions is True
+
+    current_step = 32
+    confirm_due = pending is not None and current_step - pending_step >= confirm_steps
+    assert confirm_due is False
+
+    current_step = 33
+    confirm_due = pending is not None and current_step - pending_step >= confirm_steps
+    assert confirm_due is True
+    switch_candidate = second_plan.should_switch and second_plan.current_status == "completed"
+    switch_confirmed = confirm_due and switch_candidate
+    assert switch_confirmed is True
+    assert pending.execution_instruction("cover the left block") == "cover the middle block"
+
+
+def test_action_history_discard_on_switch():
+    history = {
+        30: ["old"],
+        31: ["old"],
+        32: ["old"],
+        33: ["old"],
+        34: ["old"],
+    }
+    switch_step = 33
+    for key in [t for t in history if t >= switch_step]:
+        del history[key]
+    assert sorted(history.keys()) == [30, 31, 32]
+
+
 def main():
     test_planner_state_validation()
     test_memory_bank_without_classifier()
+    test_delayed_switch_confirmation()
+    test_action_history_discard_on_switch()
     print("VideoLLaMA3 planner state and classifier-free switch smoke test passed.")
 
 

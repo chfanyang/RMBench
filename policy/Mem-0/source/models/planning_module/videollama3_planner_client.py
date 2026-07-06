@@ -7,6 +7,7 @@ high-level subgoal.
 
 import os
 import shutil
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -62,6 +63,14 @@ class VideoLLaMA3PlannerClient:
         )
         self.frame_dir = Path(str(frame_dir)).expanduser().resolve()
         self.strict = self._cfg_bool(self._cfg_get(self.config, "strict", True), default=True)
+        cprint(
+            "[VideoLLaMA3PlannerClient] config; "
+            f"url={self.url}; timeout={self.timeout}; "
+            f"frame_stride={self.frame_stride}; "
+            f"planner_frame_interval={self.planner_frame_interval}; "
+            f"frame_dir={self.frame_dir}; strict={self.strict}",
+            "cyan",
+        )
 
         self.initial_observation = None
         self.key_information = []
@@ -204,6 +213,13 @@ class VideoLLaMA3PlannerClient:
     def _build_request_payload(self) -> Dict[str, Any]:
         previous_subgoal = self.finished_subtasks[-1] if self.finished_subtasks else self._last_subgoal
         frame_indices = self._build_planner_frame_indices()
+        cprint(
+            "[VideoLLaMA3PlannerClient] build payload; "
+            f"saved_frames={self._saved_frames}; "
+            f"planner_frame_interval={self.planner_frame_interval}; "
+            f"frame_indices={frame_indices}",
+            "cyan",
+        )
         return {
             "frame_dir": str(self.frame_dir),
             "global_task": self.global_task,
@@ -240,11 +256,28 @@ class VideoLLaMA3PlannerClient:
 
     def plan(self, inputs=None) -> PlannerState:
         payload = inputs if isinstance(inputs, dict) else self._build_request_payload()
+        request_t0 = time.perf_counter()
+        frame_indices = payload.get("frame_indices") or []
+        cprint(
+            "[VideoLLaMA3PlannerClient] POST /plan start; "
+            f"frame_dir={payload.get('frame_dir')}; "
+            f"saved_frames={self._saved_frames}; "
+            f"frame_indices_count={len(frame_indices)}; "
+            f"last_frame_index={frame_indices[-1] if frame_indices else None}; "
+            f"strict={payload.get('strict')}",
+            "cyan",
+        )
         try:
             requests_mod = self._get_requests()
             response = requests_mod.post(f"{self.url}/plan", json=payload, timeout=self.timeout)
             response.raise_for_status()
             data = response.json()
+            cprint(
+                "[VideoLLaMA3PlannerClient] POST /plan done; "
+                f"elapsed={time.perf_counter() - request_t0:.2f}s; "
+                f"ok={data.get('ok')}; error={data.get('error')}",
+                "cyan",
+            )
         except Exception as exc:
             if self.strict:
                 raise RuntimeError(f"VideoLLaMA3 planner server request failed: {exc}") from exc
